@@ -536,10 +536,33 @@ async function connectBle() {
   });
 
   device.addEventListener("gattserverdisconnected", handleBleDisconnect);
-  const server = await device.gatt.connect();
-  const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-  const txChar = await service.getCharacteristic(BLE_TX_UUID);
-  const rxChar = await service.getCharacteristic(BLE_RX_UUID);
+  let server = null;
+  let service = null;
+  let txChar = null;
+  let rxChar = null;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      server = await device.gatt.connect();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      txChar = await service.getCharacteristic(BLE_TX_UUID);
+      rxChar = await service.getCharacteristic(BLE_RX_UUID);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (device.gatt.connected) {
+        device.gatt.disconnect();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  if (lastError) {
+    throw new Error(`GATT接続に失敗しました: ${lastError.message}`);
+  }
 
   await txChar.startNotifications();
   txChar.addEventListener("characteristicvaluechanged", handleBleNotification);

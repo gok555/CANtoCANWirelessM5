@@ -575,6 +575,7 @@ async function connectBle() {
   bleState.connected = true;
   setBleUiState();
   setStatus(`BLE接続しました: ${device.name || "M5"}`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
   await sendBleCommand("REQUEST_CFG");
 }
 

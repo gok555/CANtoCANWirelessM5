@@ -696,6 +696,8 @@ async function connectUsbSerial() {
   setUsbUiState();
   setStatus("USB接続しました");
   readSerialLoop();
+  await delay(80);
+  await sendSerialCommand("PING");
 }
 
 function handleBleNotification(event) {

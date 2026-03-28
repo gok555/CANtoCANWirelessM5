@@ -18,6 +18,9 @@ const elements = {
   sortMode: document.getElementById("sortMode"),
   importMode: document.getElementById("importMode"),
   filterMode: document.getElementById("filterMode"),
+  autoHighCount: document.getElementById("autoHighCount"),
+  autoAssignTrafficButton: document.getElementById("autoAssignTrafficButton"),
+  autoAssignRateButton: document.getElementById("autoAssignRateButton"),
   usbConnectButton: document.getElementById("usbConnectButton"),
   usbReadButton: document.getElementById("usbReadButton"),
   usbWriteButton: document.getElementById("usbWriteButton"),
@@ -140,6 +143,13 @@ function mergeStat(target, extra) {
   target.rx_count += extra.rx_count || 0;
   target.tx_count += extra.tx_count || 0;
   target.timed_count += extra.timed_count || 0;
+
+  if (extra.first_ms !== null && Number.isFinite(extra.first_ms)) {
+    target.first_ms = target.first_ms === null ? extra.first_ms : Math.min(target.first_ms, extra.first_ms);
+  }
+  if (extra.last_ms !== null && Number.isFinite(extra.last_ms)) {
+    target.last_ms = target.last_ms === null ? extra.last_ms : Math.max(target.last_ms, extra.last_ms);
+  }
   if ((extra.duration_ms || 0) > 0) {
     target.duration_ms = Math.max(target.duration_ms, extra.duration_ms || 0);
   }
@@ -170,7 +180,7 @@ function updateStat(map, canId, offsetMs, direction) {
 
 function finalizeStats(map) {
   for (const stat of map.values()) {
-    if (stat.first_ms !== null && stat.last_ms !== null && stat.last_ms >= stat.first_ms) {
+    if (stat.first_ms !== null && stat.last_ms !== null && stat.last_ms > stat.first_ms) {
       stat.duration_ms = stat.last_ms - stat.first_ms;
     }
   }
@@ -183,50 +193,86 @@ function directionMatches(mode, direction) {
   return true;
 }
 
+function extractDirection(line) {
+  if (/\bRx\b/i.test(line)) return "Rx";
+  if (/\bTx\b/i.test(line)) return "Tx";
+  if (/\bRX\b/.test(line)) return "Rx";
+  if (/\bTX\b/.test(line)) return "Tx";
+  return null;
+}
+
+function parseTimestampMs(line) {
+  const bracketMatch = line.match(/\[(\d+(?:\.\d+)?)\s*(ms|s)?\]/i);
+  if (bracketMatch) {
+    const value = Number.parseFloat(bracketMatch[1]);
+    if (!Number.isFinite(value)) return null;
+    return bracketMatch[2]?.toLowerCase() === "s" ? value * 1000 : value;
+  }
+
+  const prefixMatch = line.match(/^\s*(\d+(?:\.\d+)?)\s*(ms|s)?(?:\s|,|;)/i);
+  if (!prefixMatch) {
+    return null;
+  }
+
+  const value = Number.parseFloat(prefixMatch[1]);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  if (prefixMatch[2]?.toLowerCase() === "s") {
+    return value * 1000;
+  }
+  if (prefixMatch[2]?.toLowerCase() === "ms") {
+    return value;
+  }
+  if (prefixMatch[1].includes(".")) {
+    return value * 1000;
+  }
+  return value;
+}
+
+function extractCanIds(line) {
+  const ids = [];
+
+  for (const match of line.matchAll(hexPrefixPattern)) {
+    ids.push(Number.parseInt(match[1], 16));
+  }
+  for (const match of line.matchAll(hexSuffixPattern)) {
+    ids.push(Number.parseInt(match[1], 16));
+  }
+
+  if (ids.length > 0) {
+    return ids;
+  }
+
+  const bareMatches = line.match(/\b[0-9A-F]{3,4}\b/gi) || [];
+  for (const text of bareMatches) {
+    ids.push(Number.parseInt(text, 16));
+  }
+  return ids;
+}
+
 function parseTraceText(text, importMode) {
   const fileStats = new Map();
-  const lines = text.split(/\r?\n/);
 
-  for (const line of lines) {
-    const parts = line.trim().split(/\s+/);
-    let matchedStandard = false;
-
-    if (line.includes(":") && parts.length >= 5 && (parts[2] === "Rx" || parts[2] === "Tx")) {
-      try {
-        const direction = parts[2];
-        matchedStandard = true;
-        if (!directionMatches(importMode, direction)) {
-          continue;
-        }
-        const canId = parseCanId(parts[3]);
-        const offsetMs = Number.parseFloat(parts[1]);
-        updateStat(fileStats, canId, Number.isFinite(offsetMs) ? offsetMs : null, direction);
-      } catch {
-        matchedStandard = false;
-      }
-    }
-
-    if (matchedStandard) {
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
       continue;
     }
 
-    if (importMode !== "両方") {
+    const ids = extractCanIds(line);
+    if (!ids.length) {
       continue;
     }
 
-    const found = new Set();
-    for (const match of line.matchAll(hexPrefixPattern)) {
-      try {
-        found.add(parseCanId(`0x${match[1]}`));
-      } catch {}
+    const direction = extractDirection(line);
+    if (direction && !directionMatches(importMode, direction)) {
+      continue;
     }
-    for (const match of line.matchAll(hexSuffixPattern)) {
-      try {
-        found.add(parseCanId(match[1]));
-      } catch {}
-    }
-    for (const canId of found) {
-      updateStat(fileStats, canId, null, null);
+
+    const timestampMs = parseTimestampMs(line);
+    for (const canId of ids) {
+      updateStat(fileStats, canId, timestampMs, direction);
     }
   }
 
@@ -262,7 +308,7 @@ function sortValues(values) {
   const mode = elements.sortMode.value;
   const sorted = [...values];
 
-  if (mode === "出現回数順") {
+  if (mode === "通信回数順") {
     sorted.sort((a, b) => {
       const ac = state.idStats.get(a)?.count || 0;
       const bc = state.idStats.get(b)?.count || 0;
@@ -271,7 +317,7 @@ function sortValues(values) {
     return sorted;
   }
 
-  if (mode === "推定周波数順") {
+  if (mode === "推定Hz順") {
     sorted.sort((a, b) => {
       const ah = estimateHz(state.idStats.get(a));
       const bh = estimateHz(state.idStats.get(b));
@@ -287,6 +333,27 @@ function sortValues(values) {
 
   sorted.sort((a, b) => a - b);
   return sorted;
+}
+
+function rankIdsByTraffic(values) {
+  return [...values].sort((a, b) => {
+    const ac = state.idStats.get(a)?.count || 0;
+    const bc = state.idStats.get(b)?.count || 0;
+    return bc - ac || a - b;
+  });
+}
+
+function rankIdsByRate(values) {
+  return [...values].sort((a, b) => {
+    const ah = estimateHz(state.idStats.get(a));
+    const bh = estimateHz(state.idStats.get(b));
+    if (ah === null && bh !== null) return 1;
+    if (ah !== null && bh === null) return -1;
+    if (ah !== null && bh !== null && ah !== bh) return bh - ah;
+    const ac = state.idStats.get(a)?.count || 0;
+    const bc = state.idStats.get(b)?.count || 0;
+    return bc - ac || a - b;
+  });
 }
 
 function filterValues(values, text) {
@@ -395,18 +462,21 @@ async function handleJsonLoad(file) {
   state.config.filter_mode = normalizeFilterMode(data.filter_mode);
   state.config.allow_all_ids = (data.allow_all_ids || []).map(parseCanId);
   state.config.high_priority_ids = (data.high_priority_ids || []).map(parseCanId);
+
   for (const id of state.config.allow_all_ids) {
     state.candidateIds.add(id);
   }
   for (const id of state.config.high_priority_ids) {
     state.candidateIds.add(id);
   }
+
   refreshUi();
   setStatus(`JSONを読み込みました: ${file.name}`);
 }
 
 async function handleTraceImport(files) {
   const merged = new Map();
+
   for (const file of files) {
     const text = await file.text();
     const stats = parseTraceText(text, elements.importMode.value);
@@ -421,9 +491,6 @@ async function handleTraceImport(files) {
     state.candidateIds.add(canId);
     const current = state.idStats.get(canId) || emptyStat();
     mergeStat(current, stat);
-    if ((stat.duration_ms || 0) > current.duration_ms) {
-      current.duration_ms = stat.duration_ms;
-    }
     state.idStats.set(canId, current);
   }
 
@@ -471,6 +538,26 @@ function addCustomId() {
   }
 }
 
+function autoAssignByMetric(metric) {
+  const ranked =
+    metric === "traffic"
+      ? rankIdsByTraffic(uniqueSorted([...state.candidateIds]))
+      : rankIdsByRate(uniqueSorted([...state.candidateIds]));
+
+  if (!ranked.length) {
+    window.alert("先に実データを取り込むか、候補IDを追加してください。");
+    return;
+  }
+
+  const highCount = Math.max(0, Number.parseInt(elements.autoHighCount.value, 10) || 0);
+  state.config.allow_all_ids = uniqueSorted(ranked);
+  state.config.high_priority_ids = uniqueSorted(ranked.slice(0, Math.min(highCount, ranked.length)));
+  refreshUi();
+
+  const label = metric === "traffic" ? "通信量順" : "速度順";
+  setStatus(`${label}で自動振分しました。通すID ${state.config.allow_all_ids.length}件 / 高優先 ${state.config.high_priority_ids.length}件`);
+}
+
 async function sendBleCommand(command) {
   if (!bleState.connected || !bleState.rxChar) {
     throw new Error("BLE接続されていません");
@@ -489,24 +576,12 @@ function shouldIgnoreDeviceMessage(message) {
   if (!message) {
     return true;
   }
-  if (message.startsWith("[BLE] cmd:")) {
-    return true;
-  }
-  if (message.startsWith("[BOOT]")) {
-    return true;
-  }
-  if (message.startsWith("ESP-ROM:")) {
-    return true;
-  }
-  if (message.startsWith("auto detect board:")) {
-    return true;
-  }
-  if (message.includes(" can>")) {
-    return true;
-  }
-  if (/^(?:[0-9A-F]{2}:){3,}[0-9A-F]{2}$/i.test(message)) {
-    return true;
-  }
+  if (message.startsWith("[BLE] cmd:")) return true;
+  if (message.startsWith("[BOOT]")) return true;
+  if (message.startsWith("ESP-ROM:")) return true;
+  if (message.startsWith("auto detect board:")) return true;
+  if (message.includes(" can>")) return true;
+  if (/^(?:[0-9A-F]{2}:){3,}[0-9A-F]{2}$/i.test(message)) return true;
   return false;
 }
 
@@ -832,6 +907,9 @@ function bindEvents() {
   document.getElementById("fromAllowButton").addEventListener("click", removeFromAllow);
   document.getElementById("toHighButton").addEventListener("click", moveToHigh);
   document.getElementById("fromHighButton").addEventListener("click", removeFromHigh);
+
+  elements.autoAssignTrafficButton.addEventListener("click", () => autoAssignByMetric("traffic"));
+  elements.autoAssignRateButton.addEventListener("click", () => autoAssignByMetric("rate"));
 
   elements.usbConnectButton.addEventListener("click", async () => {
     try {

@@ -70,6 +70,10 @@ function setStatus(message) {
   elements.statusBar.textContent = message;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function setBleUiState() {
   const connected = bleState.connected;
   elements.bleConnectButton.textContent = connected ? "BLE切断" : "BLE接続";
@@ -84,10 +88,6 @@ function setUsbUiState() {
   elements.usbWriteButton.disabled = !connected;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function parseCanId(raw) {
   const text = String(raw).trim().toUpperCase();
   if (!text) {
@@ -99,7 +99,7 @@ function parseCanId(raw) {
   if (/^[0-9A-F]+$/.test(text)) {
     return Number.parseInt(text, 16);
   }
-  throw new Error(`CAN ID の形式が正しくありません: ${raw}`);
+  throw new Error(`CAN ID の形式が不正です: ${raw}`);
 }
 
 function formatCanId(value) {
@@ -428,7 +428,7 @@ async function handleTraceImport(files) {
   }
 
   refreshUi();
-  setStatus(`${elements.importMode.value}で ${files.length}個のファイルから ${merged.size} 個のIDを取り込みました`);
+  setStatus(`${elements.importMode.value}で ${files.length} ファイルから ${merged.size} 件のIDを取り込みました`);
 }
 
 function moveToAllow() {
@@ -569,6 +569,80 @@ async function handleUsbDisconnect() {
   setStatus("USB接続が切れました");
 }
 
+function applyDeviceMessage(message) {
+  if (!message || shouldIgnoreDeviceMessage(message)) {
+    return;
+  }
+
+  if (message.startsWith("ROLE=")) {
+    const role = message.substring(5);
+    bleState.role = role;
+    serialState.role = role;
+    setStatus(`接続先: ${role || "M5"}`);
+    return;
+  }
+
+  if (message.startsWith("FILTER=")) {
+    state.config.filter_mode = normalizeFilterMode(message.substring(7));
+    refreshUi();
+    return;
+  }
+
+  if (message.startsWith("ALLOW=")) {
+    state.config.allow_all_ids = parseIdArrayText(message.substring(6));
+    for (const id of state.config.allow_all_ids) {
+      state.candidateIds.add(id);
+    }
+    refreshUi();
+    return;
+  }
+
+  if (message.startsWith("HIGH=")) {
+    state.config.high_priority_ids = parseIdArrayText(message.substring(5));
+    for (const id of state.config.high_priority_ids) {
+      state.candidateIds.add(id);
+    }
+    refreshUi();
+    return;
+  }
+
+  if (message === "CFG_DONE") {
+    refreshUi();
+    const role = serialState.role || bleState.role;
+    setStatus(`M5${role ? `(${role})` : ""} の設定を読み込みました`);
+    return;
+  }
+
+  if (message === "CFG_SAVED") {
+    const role = serialState.role || bleState.role;
+    setStatus(`M5${role ? `(${role})` : ""} に設定を保存しました`);
+    return;
+  }
+
+  if (message === "CFG_RESET") {
+    const role = serialState.role || bleState.role;
+    setStatus(`M5${role ? `(${role})` : ""} を初期設定へ戻しました`);
+    return;
+  }
+
+  if (
+    message.startsWith("ALLOW_OK=") ||
+    message.startsWith("HIGH_OK=") ||
+    message.startsWith("FILTER_OK=") ||
+    message.startsWith("SYNC_") ||
+    message === "PONG"
+  ) {
+    return;
+  }
+
+  if (message.startsWith("ERR=")) {
+    setStatus(`M5エラー: ${message}`);
+    return;
+  }
+
+  setStatus(`受信: ${message}`);
+}
+
 async function readSerialLoop() {
   let buffer = "";
   try {
@@ -581,7 +655,7 @@ async function readSerialLoop() {
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       for (const line of lines) {
-        applyBleMessage(line.trim());
+        applyDeviceMessage(line.trim());
       }
     }
   } catch (error) {
@@ -624,86 +698,14 @@ async function connectUsbSerial() {
   readSerialLoop();
 }
 
-function applyBleMessage(message) {
-  if (!message) {
-    return;
-  }
-
-  if (shouldIgnoreDeviceMessage(message)) {
-    return;
-  }
-
-  if (message.startsWith("ROLE=")) {
-    bleState.role = message.substring(5);
-    setStatus(`BLE接続中: ${bleState.role || "M5"}`);
-    return;
-  }
-
-  if (message.startsWith("FILTER=")) {
-    state.config.filter_mode = normalizeFilterMode(message.substring(7));
-    refreshUi();
-    return;
-  }
-
-  if (message.startsWith("ALLOW=")) {
-    state.config.allow_all_ids = parseIdArrayText(message.substring(6));
-    for (const id of state.config.allow_all_ids) {
-      state.candidateIds.add(id);
-    }
-    refreshUi();
-    return;
-  }
-
-  if (message.startsWith("HIGH=")) {
-    state.config.high_priority_ids = parseIdArrayText(message.substring(5));
-    for (const id of state.config.high_priority_ids) {
-      state.candidateIds.add(id);
-    }
-    refreshUi();
-    return;
-  }
-
-  if (message === "CFG_DONE") {
-    refreshUi();
-    setStatus(`M5${bleState.role ? `(${bleState.role})` : ""} から設定を読み込みました`);
-    return;
-  }
-
-  if (message === "CFG_SAVED") {
-    setStatus(`M5${bleState.role ? `(${bleState.role})` : ""} へ設定を保存しました`);
-    return;
-  }
-
-  if (message === "CFG_RESET") {
-    setStatus(`M5${bleState.role ? `(${bleState.role})` : ""} を初期設定へ戻しました`);
-    return;
-  }
-
-  if (
-    message.startsWith("ALLOW_OK=") ||
-    message.startsWith("HIGH_OK=") ||
-    message.startsWith("FILTER_OK=") ||
-    message === "PONG"
-  ) {
-    return;
-  }
-
-  if (message.startsWith("ERR=")) {
-    setStatus(`M5エラー: ${message}`);
-    return;
-  }
-
-  setStatus(`BLE受信: ${message}`);
-}
-
 function handleBleNotification(event) {
   const value = new TextDecoder().decode(event.target.value);
-  applyBleMessage(value.trim());
+  applyDeviceMessage(value.trim());
 }
 
 async function connectBle() {
   if (!("bluetooth" in navigator)) {
-    window.alert("このブラウザは Web Bluetooth に対応していません。Chrome または Edge を使ってください。");
+    window.alert("このブラウザは Web Bluetooth に対応していません。Chrome か Edge を使ってください。");
     return;
   }
 
@@ -721,6 +723,7 @@ async function connectBle() {
   });
 
   device.addEventListener("gattserverdisconnected", handleBleDisconnect);
+
   let server = null;
   let service = null;
   let txChar = null;
@@ -730,9 +733,9 @@ async function connectBle() {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       server = await device.gatt.connect();
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await delay(500);
       service = await server.getPrimaryService(BLE_SERVICE_UUID);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await delay(150);
       txChar = await service.getCharacteristic(BLE_TX_UUID);
       rxChar = await service.getCharacteristic(BLE_RX_UUID);
       lastError = null;
@@ -742,7 +745,7 @@ async function connectBle() {
       if (device.gatt.connected) {
         device.gatt.disconnect();
       }
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await delay(600);
     }
   }
 
@@ -764,9 +767,9 @@ async function connectBle() {
 }
 
 async function readConfigFromBle() {
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await delay(500);
   await sendBleCommand("REQUEST_CFG");
-  setStatus("M5から現在設定を読み込み中です");
+  setStatus("BLE経由でM5設定を読込中です");
 }
 
 async function writeConfigToBle() {
@@ -778,7 +781,7 @@ async function writeConfigToBle() {
   await sendBleCommand(`SET_HIGH=${highLine}`);
   await sendBleCommand("SAVE_CFG");
   await sendBleCommand("REQUEST_CFG");
-  setStatus("M5へ設定を書き込みました");
+  setStatus("BLE経由でM5へ設定を書込中です");
 }
 
 async function readConfigFromUsb() {
@@ -859,7 +862,7 @@ function bindEvents() {
     try {
       await connectBle();
     } catch (error) {
-      setStatus(`BLE接続失敗: ${error.message}`);
+      setStatus(`BLE接続エラー: ${error.message}`);
       window.alert(`BLE接続に失敗しました: ${error.message}`);
     }
   });
@@ -868,8 +871,8 @@ function bindEvents() {
     try {
       await readConfigFromBle();
     } catch (error) {
-      setStatus(`M5読込失敗: ${error.message}`);
-      window.alert(`M5からの読込に失敗しました: ${error.message}`);
+      setStatus(`BLE読込エラー: ${error.message}`);
+      window.alert(`BLEでのM5読込に失敗しました: ${error.message}`);
     }
   });
 
@@ -877,8 +880,8 @@ function bindEvents() {
     try {
       await writeConfigToBle();
     } catch (error) {
-      setStatus(`M5書込失敗: ${error.message}`);
-      window.alert(`M5への書込に失敗しました: ${error.message}`);
+      setStatus(`BLE書込エラー: ${error.message}`);
+      window.alert(`BLEでのM5書込に失敗しました: ${error.message}`);
     }
   });
 

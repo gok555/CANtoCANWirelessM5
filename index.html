@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ワイヤレスCANブリッジ設定 Web版</title>
+  <title>CAN Bridge Config Web</title>
   <style>
     :root {
       --panel: #fffdfa;
@@ -15,48 +15,23 @@
       --muted: #6f6255;
       --accent: #005f73;
     }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html,
-    body {
+    * { box-sizing: border-box; }
+    html, body {
       margin: 0;
-      font-family: "Yu Gothic UI", "BIZ UDPGothic", sans-serif;
+      font-family: "Segoe UI", sans-serif;
       background: linear-gradient(180deg, #f4f1eb 0%, #e9e0d2 100%);
       color: var(--text);
     }
-
-    .app {
-      max-width: 1800px;
-      margin: 0 auto;
-      padding: 16px;
-    }
-
-    .header h1 {
-      margin: 0 0 2px;
-      font-size: 24px;
-    }
-
-    .header p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .toolbar,
-    .note,
-    .guide,
-    .status,
-    .output {
+    .app { max-width: 1800px; margin: 0 auto; padding: 16px; }
+    .header h1 { margin: 0 0 4px; font-size: 28px; }
+    .header p { margin: 0; color: var(--muted); font-size: 14px; }
+    .toolbar, .note, .guide, .status, .output {
       margin-top: 14px;
       padding: 10px 12px;
-      background: rgba(255, 253, 250, 0.9);
+      background: rgba(255, 253, 250, 0.92);
       border: 1px solid var(--line);
       border-radius: 16px;
     }
-
     .toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -64,21 +39,13 @@
       justify-content: space-between;
       align-items: center;
     }
-
     .toolbar-group {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       align-items: center;
     }
-
-    button,
-    select,
-    input,
-    textarea {
-      font: inherit;
-    }
-
+    button, select, input, textarea { font: inherit; }
     button {
       border: 1px solid #b9aa95;
       background: #fff8ee;
@@ -86,33 +53,16 @@
       padding: 10px 14px;
       border-radius: 12px;
       cursor: pointer;
-      transition: 0.15s ease;
     }
-
-    button:hover {
-      background: #f4eadb;
-      border-color: #9b8a72;
-    }
-
-    button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-
-    select,
-    input,
-    textarea {
+    button:hover { background: #f4eadb; border-color: #9b8a72; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    select, input, textarea {
       border: 1px solid var(--line);
       border-radius: 10px;
       background: var(--panel);
       color: var(--text);
     }
-
-    select,
-    input {
-      padding: 9px 10px;
-    }
-
+    select, input { padding: 9px 10px; }
     .columns {
       margin-top: 14px;
       display: grid;
@@ -120,205 +70,147 @@
       gap: 14px;
       align-items: stretch;
     }
-
     .panel {
       min-width: 0;
       min-height: 580px;
       padding: 12px;
-      background: rgba(255, 253, 250, 0.92);
+      background: rgba(255, 253, 250, 0.94);
       border: 1px solid var(--line);
       border-radius: 18px;
       display: flex;
       flex-direction: column;
     }
-
-    .panel-title {
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-
-    .filter-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-
-    .id-list {
-      width: 100%;
-      min-height: 470px;
-      padding: 8px;
-      flex: 1;
-    }
-
-    .panel-actions {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: 10px;
-    }
-
-    .output summary {
-      cursor: pointer;
-      font-weight: 700;
-    }
-
-    .output-buttons {
-      display: flex;
-      gap: 10px;
-      margin: 10px 0 8px;
-      flex-wrap: wrap;
-    }
-
-    #headerPreview {
-      width: 100%;
-      min-height: 100px;
-      max-height: 180px;
-      padding: 10px;
-      resize: vertical;
-    }
-
-    .status {
-      color: var(--accent);
-      font-weight: 600;
-    }
-
+    .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .filter-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 10px; }
+    .id-list { width: 100%; min-height: 470px; padding: 8px; flex: 1; }
+    .panel-actions { display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+    .output summary { cursor: pointer; font-weight: 700; }
+    .output-buttons { display: flex; gap: 10px; margin: 10px 0 8px; flex-wrap: wrap; }
+    #headerPreview { width: 100%; min-height: 100px; max-height: 180px; padding: 10px; resize: vertical; }
+    .status { color: var(--accent); font-weight: 700; }
     @media (max-width: 980px) {
-      .columns {
-        grid-template-columns: 1fr;
-      }
-
-      .panel-actions {
-        flex-direction: row;
-        justify-content: flex-start;
-      }
+      .columns { grid-template-columns: 1fr; }
+      .panel-actions { flex-direction: row; justify-content: flex-start; }
     }
   </style>
 </head>
 <body>
   <main class="app">
     <header class="header">
-      <div>
-        <h1>ワイヤレスCANブリッジ設定 Web版</h1>
-        <p>設定を編集し、JSON保存・ヘッダ生成・M5への読込/書込ができます。</p>
-      </div>
+      <h1>CAN Bridge Config Web</h1>
+      <p>Import log, sort IDs, read/write M5, and generate header.</p>
     </header>
 
     <section class="toolbar">
       <div class="toolbar-group">
-        <button id="loadJsonButton">JSON読込</button>
-        <button id="saveJsonButton">JSON保存</button>
-        <button id="importTraceButton">実データ取込</button>
-        <button id="addCustomIdButton">ID手入力</button>
-        <button id="generateHeaderButton">ヘッダ生成</button>
-        <button id="autoAssignTrafficButton">通信量→自動振分</button>
-        <button id="autoAssignRateButton">速度→自動振分</button>
-        <button id="usbConnectButton">USB接続</button>
-        <button id="usbReadButton" disabled>USB M5読込</button>
-        <button id="usbWriteButton" disabled>USB M5書込</button>
-        <button id="bleConnectButton">BLE接続</button>
-        <button id="bleReadButton" disabled>BLE M5読込</button>
-        <button id="bleWriteButton" disabled>BLE M5書込</button>
+        <button id="loadJsonButton">Load JSON</button>
+        <button id="saveJsonButton">Save JSON</button>
+        <button id="importTraceButton">Import Trace</button>
+        <button id="addCustomIdButton">Add ID</button>
+        <button id="generateHeaderButton">Make Header</button>
+        <button id="autoAssignTrafficButton">Auto By Count</button>
+        <button id="autoAssignRateButton">Auto By Rate</button>
+        <button id="usbConnectButton">USB Connect</button>
+        <button id="usbReadButton" disabled>USB Read</button>
+        <button id="usbWriteButton" disabled>USB Write</button>
+        <button id="bleConnectButton">BLE Connect</button>
+        <button id="bleReadButton" disabled>BLE Read</button>
+        <button id="bleWriteButton" disabled>BLE Write</button>
       </div>
       <div class="toolbar-group">
-        <label>
-          FILTER
+        <label>FILTER
           <select id="filterMode">
             <option value="ALLOW">ALLOW</option>
             <option value="ALL">ALL</option>
           </select>
         </label>
-        <label>
-          並び順
+        <label>SORT
           <select id="sortMode">
-            <option>ID順</option>
-            <option>通信回数順</option>
-            <option>推定Hz順</option>
+            <option value="id">ID</option>
+            <option value="traffic">COUNT</option>
+            <option value="rate">RATE</option>
           </select>
         </label>
-        <label>
-          取込対象
+        <label>IMPORT
           <select id="importMode">
-            <option>両方</option>
-            <option>Rxのみ</option>
-            <option>Txのみ</option>
+            <option value="both">BOTH</option>
+            <option value="rx">RX</option>
+            <option value="tx">TX</option>
           </select>
         </label>
-        <label>
-          高優先件数
+        <label>HIGH N
           <select id="autoHighCount">
-            <option value="5">5件</option>
-            <option value="10" selected>10件</option>
-            <option value="20">20件</option>
-            <option value="30">30件</option>
+            <option value="5">5</option>
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="30">30</option>
           </select>
         </label>
       </div>
     </section>
 
     <section class="note">
-      左は候補ID、中央は通すID、右は高優先IDです。実車やアナライザのログを取り込んで、そのまま設定変更できます。
+      Left: candidates. Center: allow list. Right: high priority. Import trace, then auto-assign by count or rate.
     </section>
 
     <section class="columns">
       <div class="panel">
-        <div class="panel-title" id="availableTitle">候補ID</div>
+        <div class="panel-title" id="availableTitle">Candidates</div>
         <div class="filter-row">
-          <input id="availableFilter" type="text" placeholder="候補IDを検索">
-          <button data-clear-target="availableFilter">クリア</button>
+          <input id="availableFilter" type="text" placeholder="Search candidates">
+          <button data-clear-target="availableFilter">Clear</button>
         </div>
         <select id="availableList" class="id-list" multiple></select>
       </div>
 
       <div class="panel-actions">
-        <button id="toAllowButton">通すIDに追加 →</button>
-        <button id="fromAllowButton">← 候補へ戻す</button>
+        <button id="toAllowButton">To Allow -></button>
+        <button id="fromAllowButton"><- To Cand</button>
       </div>
 
       <div class="panel">
-        <div class="panel-title" id="allowTitle">通すID</div>
+        <div class="panel-title" id="allowTitle">Allow</div>
         <div class="filter-row">
-          <input id="allowFilter" type="text" placeholder="通すIDを検索">
-          <button data-clear-target="allowFilter">クリア</button>
+          <input id="allowFilter" type="text" placeholder="Search allow">
+          <button data-clear-target="allowFilter">Clear</button>
         </div>
         <select id="allowList" class="id-list" multiple></select>
       </div>
 
       <div class="panel-actions">
-        <button id="toHighButton">高優先にする →</button>
-        <button id="fromHighButton">← 通すIDへ戻す</button>
+        <button id="toHighButton">To High -></button>
+        <button id="fromHighButton"><- To Allow</button>
       </div>
 
       <div class="panel">
-        <div class="panel-title" id="highTitle">高優先ID</div>
+        <div class="panel-title" id="highTitle">High</div>
         <div class="filter-row">
-          <input id="highFilter" type="text" placeholder="高優先IDを検索">
-          <button data-clear-target="highFilter">クリア</button>
+          <input id="highFilter" type="text" placeholder="Search high">
+          <button data-clear-target="highFilter">Clear</button>
         </div>
         <select id="highList" class="id-list" multiple></select>
       </div>
     </section>
 
-    <details class="output">
-      <summary>ヘッダ出力</summary>
-      <div class="output-buttons">
-        <button id="downloadAHeaderButton">A用ヘッダ保存</button>
-        <button id="downloadBHeaderButton">B用ヘッダ保存</button>
-      </div>
-      <textarea id="headerPreview" readonly placeholder="ここに生成したヘッダの内容が表示されます。"></textarea>
-    </details>
-
     <section class="guide">
-      使い方: 1) 実データ取込 2) 候補IDを確認 3) 通すIDへ追加 4) 必要なら高優先にする 5) JSON保存またはヘッダ生成 6) USBまたはBLEでM5へ反映
+      Auto By Count = more frames first. Auto By Rate = faster update first.
     </section>
 
-    <footer class="status" id="statusBar">準備完了</footer>
+    <details class="output">
+      <summary>Header Output</summary>
+      <div class="output-buttons">
+        <button id="downloadAHeaderButton">Save A Header</button>
+        <button id="downloadBHeaderButton">Save B Header</button>
+      </div>
+      <textarea id="headerPreview" spellcheck="false"></textarea>
+    </details>
+
+    <footer class="status" id="statusBar">READY</footer>
 
     <input id="jsonFileInput" type="file" accept=".json,application/json" hidden>
-    <input id="traceFileInput" type="file" accept=".trace,.txt,.log,.csv" multiple hidden>
+    <input id="traceFileInput" type="file" accept=".trace,.log,.txt,.csv" multiple hidden>
   </main>
 
-  <script src="app.js?v=20260328b"></script>
+  <script src="app.js?v=20260328d"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 const state = {
   config: {
+    filter_mode: "ALLOW",
     allow_all_ids: [],
     high_priority_ids: [],
   },
@@ -16,6 +17,7 @@ const elements = {
   statusBar: document.getElementById("statusBar"),
   sortMode: document.getElementById("sortMode"),
   importMode: document.getElementById("importMode"),
+  filterMode: document.getElementById("filterMode"),
   bleConnectButton: document.getElementById("bleConnectButton"),
   bleReadButton: document.getElementById("bleReadButton"),
   bleWriteButton: document.getElementById("bleWriteButton"),
@@ -46,6 +48,7 @@ const bleState = {
 const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+const FILTER_MODES = new Set(["ALLOW", "ALL"]);
 
 const hexPrefixPattern = /\b0x([0-9a-f]{1,8})\b/gi;
 const hexSuffixPattern = /\b([0-9a-f]{3,8})h\b/gi;
@@ -83,7 +86,13 @@ function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
+function normalizeFilterMode(raw) {
+  const mode = String(raw || "").trim().toUpperCase();
+  return FILTER_MODES.has(mode) ? mode : "ALLOW";
+}
+
 function ensureValidConfig() {
+  state.config.filter_mode = normalizeFilterMode(state.config.filter_mode);
   state.config.allow_all_ids = uniqueSorted(state.config.allow_all_ids);
   state.config.high_priority_ids = uniqueSorted(
     state.config.high_priority_ids.filter((id) => state.config.allow_all_ids.includes(id)),
@@ -304,6 +313,7 @@ function renderHeaderText() {
 
 function refreshUi() {
   ensureValidConfig();
+  elements.filterMode.value = state.config.filter_mode;
 
   const availableAll = sortValues(uniqueSorted([...state.candidateIds]));
   const allowAll = sortValues(uniqueSorted(state.config.allow_all_ids));
@@ -334,6 +344,7 @@ function currentJsonText() {
   ensureValidConfig();
   return `${JSON.stringify(
     {
+      filter_mode: state.config.filter_mode,
       allow_all_ids: state.config.allow_all_ids.map(formatCanId),
       high_priority_ids: state.config.high_priority_ids.map(formatCanId),
     },
@@ -357,6 +368,7 @@ function parseIdArrayText(text) {
 async function handleJsonLoad(file) {
   const text = await file.text();
   const data = JSON.parse(text);
+  state.config.filter_mode = normalizeFilterMode(data.filter_mode);
   state.config.allow_all_ids = (data.allow_all_ids || []).map(parseCanId);
   state.config.high_priority_ids = (data.high_priority_ids || []).map(parseCanId);
   for (const id of state.config.allow_all_ids) {
@@ -465,6 +477,12 @@ function applyBleMessage(message) {
     return;
   }
 
+  if (message.startsWith("FILTER=")) {
+    state.config.filter_mode = normalizeFilterMode(message.substring(7));
+    refreshUi();
+    return;
+  }
+
   if (message.startsWith("ALLOW=")) {
     state.config.allow_all_ids = parseIdArrayText(message.substring(6));
     for (const id of state.config.allow_all_ids) {
@@ -531,7 +549,7 @@ async function connectBle() {
   }
 
   const device = await navigator.bluetooth.requestDevice({
-    filters: [{ services: [BLE_SERVICE_UUID] }],
+    filters: [{ namePrefix: "M5" }],
     optionalServices: [BLE_SERVICE_UUID],
   });
 
@@ -542,11 +560,12 @@ async function connectBle() {
   let rxChar = null;
   let lastError = null;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       server = await device.gatt.connect();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      await new Promise((resolve) => setTimeout(resolve, 150));
       txChar = await service.getCharacteristic(BLE_TX_UUID);
       rxChar = await service.getCharacteristic(BLE_RX_UUID);
       lastError = null;
@@ -556,7 +575,7 @@ async function connectBle() {
       if (device.gatt.connected) {
         device.gatt.disconnect();
       }
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 600));
     }
   }
 
@@ -575,11 +594,10 @@ async function connectBle() {
   bleState.connected = true;
   setBleUiState();
   setStatus(`BLE接続しました: ${device.name || "M5"}`);
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  await sendBleCommand("REQUEST_CFG");
 }
 
 async function readConfigFromBle() {
+  await new Promise((resolve) => setTimeout(resolve, 500));
   await sendBleCommand("REQUEST_CFG");
   setStatus("M5から現在設定を読み込み中です");
 }
@@ -588,6 +606,7 @@ async function writeConfigToBle() {
   ensureValidConfig();
   const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
   const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
+  await sendBleCommand(`SET_FILTER=${state.config.filter_mode}`);
   await sendBleCommand(`SET_ALLOW=${allowLine}`);
   await sendBleCommand(`SET_HIGH=${highLine}`);
   await sendBleCommand("SAVE_CFG");
@@ -649,6 +668,10 @@ function bindEvents() {
   });
 
   elements.sortMode.addEventListener("change", refreshUi);
+  elements.filterMode.addEventListener("change", () => {
+    state.config.filter_mode = normalizeFilterMode(elements.filterMode.value);
+    refreshUi();
+  });
   elements.availableFilter.addEventListener("input", refreshUi);
   elements.allowFilter.addEventListener("input", refreshUi);
   elements.highFilter.addEventListener("input", refreshUi);

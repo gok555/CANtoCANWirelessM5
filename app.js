@@ -430,6 +430,9 @@ async function handleTraceImport(files) {
 function moveToAllow() {
   const ids = selectedIds(elements.availableList);
   state.config.allow_all_ids = uniqueSorted([...state.config.allow_all_ids, ...ids]);
+  for (const id of ids) {
+    state.candidateIds.delete(id);
+  }
   refreshUi();
 }
 
@@ -437,6 +440,9 @@ function removeFromAllow() {
   const removeSet = new Set(selectedIds(elements.allowList));
   state.config.allow_all_ids = state.config.allow_all_ids.filter((id) => !removeSet.has(id));
   state.config.high_priority_ids = state.config.high_priority_ids.filter((id) => !removeSet.has(id));
+  for (const id of removeSet) {
+    state.candidateIds.add(id);
+  }
   refreshUi();
 }
 
@@ -466,9 +472,10 @@ function addCustomId() {
 }
 
 function autoAssignByMetric(metric) {
+  const sourceIds = uniqueSorted([...state.candidateIds]);
   const ranked = metric === "traffic"
-    ? rankIdsByTraffic(uniqueSorted([...state.candidateIds]))
-    : rankIdsByRate(uniqueSorted([...state.candidateIds]));
+    ? rankIdsByTraffic(sourceIds)
+    : rankIdsByRate(sourceIds);
 
   if (!ranked.length) {
     window.alert("Import trace first, or add candidate IDs.");
@@ -478,6 +485,9 @@ function autoAssignByMetric(metric) {
   const highCount = Math.max(0, Number.parseInt(elements.autoHighCount.value, 10) || 0);
   state.config.allow_all_ids = uniqueSorted(ranked);
   state.config.high_priority_ids = uniqueSorted(ranked.slice(0, Math.min(highCount, ranked.length)));
+  for (const id of ranked) {
+    state.candidateIds.delete(id);
+  }
   refreshUi();
 
   const label = metric === "traffic" ? "COUNT" : "RATE";

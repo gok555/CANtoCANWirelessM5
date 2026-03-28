@@ -488,9 +488,7 @@ function autoAssignByMetric(metric) {
   const highCount = Math.max(0, Number.parseInt(elements.autoHighCount.value, 10) || 0);
   state.config.allow_all_ids = uniqueSorted(ranked);
   state.config.high_priority_ids = uniqueSorted(ranked.slice(0, Math.min(highCount, ranked.length)));
-  for (const id of ranked) {
-    state.candidateIds.delete(id);
-  }
+  state.candidateIds = new Set();
   refreshUi();
 
   const label = metric === "traffic" ? "COUNT" : "RATE";

@@ -18,6 +18,9 @@ const elements = {
   sortMode: document.getElementById("sortMode"),
   importMode: document.getElementById("importMode"),
   filterMode: document.getElementById("filterMode"),
+  usbConnectButton: document.getElementById("usbConnectButton"),
+  usbReadButton: document.getElementById("usbReadButton"),
+  usbWriteButton: document.getElementById("usbWriteButton"),
   bleConnectButton: document.getElementById("bleConnectButton"),
   bleReadButton: document.getElementById("bleReadButton"),
   bleWriteButton: document.getElementById("bleWriteButton"),
@@ -45,6 +48,16 @@ const bleState = {
   role: "",
 };
 
+const serialState = {
+  port: null,
+  reader: null,
+  writer: null,
+  readableClosed: null,
+  writableClosed: null,
+  connected: false,
+  role: "",
+};
+
 const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
@@ -62,6 +75,17 @@ function setBleUiState() {
   elements.bleConnectButton.textContent = connected ? "BLE切断" : "BLE接続";
   elements.bleReadButton.disabled = !connected;
   elements.bleWriteButton.disabled = !connected;
+}
+
+function setUsbUiState() {
+  const connected = serialState.connected;
+  elements.usbConnectButton.textContent = connected ? "USB切断" : "USB接続";
+  elements.usbReadButton.disabled = !connected;
+  elements.usbWriteButton.disabled = !connected;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseCanId(raw) {
@@ -454,6 +478,77 @@ async function sendBleCommand(command) {
   await bleState.rxChar.writeValue(new TextEncoder().encode(command));
 }
 
+async function sendSerialCommand(command) {
+  if (!serialState.connected || !serialState.writer) {
+    throw new Error("USB接続されていません");
+  }
+  await serialState.writer.write(`${command}\n`);
+}
+
+function shouldIgnoreDeviceMessage(message) {
+  if (!message) {
+    return true;
+  }
+  if (message.startsWith("[BLE] cmd:")) {
+    return true;
+  }
+  if (message.startsWith("[BOOT]")) {
+    return true;
+  }
+  if (message.startsWith("ESP-ROM:")) {
+    return true;
+  }
+  if (message.startsWith("auto detect board:")) {
+    return true;
+  }
+  if (message.includes(" can>")) {
+    return true;
+  }
+  if (/^(?:[0-9A-F]{2}:){3,}[0-9A-F]{2}$/i.test(message)) {
+    return true;
+  }
+  return false;
+}
+
+async function closeSerialPort() {
+  if (serialState.reader) {
+    try {
+      await serialState.reader.cancel();
+    } catch {}
+    serialState.reader.releaseLock();
+    serialState.reader = null;
+  }
+
+  if (serialState.writer) {
+    try {
+      await serialState.writer.close();
+    } catch {}
+    serialState.writer.releaseLock();
+    serialState.writer = null;
+  }
+
+  if (serialState.readableClosed) {
+    try {
+      await serialState.readableClosed;
+    } catch {}
+    serialState.readableClosed = null;
+  }
+
+  if (serialState.writableClosed) {
+    try {
+      await serialState.writableClosed;
+    } catch {}
+    serialState.writableClosed = null;
+  }
+
+  if (serialState.port) {
+    try {
+      await serialState.port.close();
+    } catch {}
+    serialState.port = null;
+  }
+}
+
 function handleBleDisconnect() {
   bleState.device = null;
   bleState.server = null;
@@ -466,8 +561,75 @@ function handleBleDisconnect() {
   setStatus("BLE接続が切れました");
 }
 
+async function handleUsbDisconnect() {
+  serialState.connected = false;
+  serialState.role = "";
+  setUsbUiState();
+  await closeSerialPort();
+  setStatus("USB接続が切れました");
+}
+
+async function readSerialLoop() {
+  let buffer = "";
+  try {
+    while (serialState.connected && serialState.reader) {
+      const { value, done } = await serialState.reader.read();
+      if (done) {
+        break;
+      }
+      buffer += value;
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        applyBleMessage(line.trim());
+      }
+    }
+  } catch (error) {
+    if (serialState.connected) {
+      setStatus(`USB受信エラー: ${error.message}`);
+    }
+  } finally {
+    if (serialState.connected) {
+      await handleUsbDisconnect();
+    }
+  }
+}
+
+async function connectUsbSerial() {
+  if (!("serial" in navigator)) {
+    window.alert("このブラウザは Web Serial に対応していません。Chrome か Edge を使ってください。");
+    return;
+  }
+
+  if (serialState.connected) {
+    await handleUsbDisconnect();
+    return;
+  }
+
+  const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 115200 });
+
+  const decoder = new TextDecoderStream();
+  serialState.readableClosed = port.readable.pipeTo(decoder.writable);
+  serialState.reader = decoder.readable.getReader();
+
+  const encoder = new TextEncoderStream();
+  serialState.writableClosed = encoder.readable.pipeTo(port.writable);
+  serialState.writer = encoder.writable.getWriter();
+
+  serialState.port = port;
+  serialState.connected = true;
+  setUsbUiState();
+  setStatus("USB接続しました");
+  readSerialLoop();
+}
+
 function applyBleMessage(message) {
   if (!message) {
+    return;
+  }
+
+  if (shouldIgnoreDeviceMessage(message)) {
     return;
   }
 
@@ -517,7 +679,12 @@ function applyBleMessage(message) {
     return;
   }
 
-  if (message.startsWith("ALLOW_OK=") || message.startsWith("HIGH_OK=") || message === "PONG") {
+  if (
+    message.startsWith("ALLOW_OK=") ||
+    message.startsWith("HIGH_OK=") ||
+    message.startsWith("FILTER_OK=") ||
+    message === "PONG"
+  ) {
     return;
   }
 
@@ -614,6 +781,27 @@ async function writeConfigToBle() {
   setStatus("M5へ設定を書き込みました");
 }
 
+async function readConfigFromUsb() {
+  await sendSerialCommand("REQUEST_CFG");
+  setStatus("USB経由でM5設定を読込中です");
+}
+
+async function writeConfigToUsb() {
+  ensureValidConfig();
+  const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
+  const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
+  await sendSerialCommand(`SET_FILTER=${state.config.filter_mode}`);
+  await delay(40);
+  await sendSerialCommand(`SET_ALLOW=${allowLine}`);
+  await delay(40);
+  await sendSerialCommand(`SET_HIGH=${highLine}`);
+  await delay(40);
+  await sendSerialCommand("SAVE_CFG");
+  await delay(120);
+  await sendSerialCommand("REQUEST_CFG");
+  setStatus("USB経由でM5へ設定を書込中です");
+}
+
 function bindEvents() {
   document.getElementById("loadJsonButton").addEventListener("click", () => elements.jsonFileInput.click());
   document.getElementById("saveJsonButton").addEventListener("click", () => {
@@ -639,6 +827,33 @@ function bindEvents() {
   document.getElementById("fromAllowButton").addEventListener("click", removeFromAllow);
   document.getElementById("toHighButton").addEventListener("click", moveToHigh);
   document.getElementById("fromHighButton").addEventListener("click", removeFromHigh);
+
+  elements.usbConnectButton.addEventListener("click", async () => {
+    try {
+      await connectUsbSerial();
+    } catch (error) {
+      setStatus(`USB接続エラー: ${error.message}`);
+      window.alert(`USB接続に失敗しました: ${error.message}`);
+    }
+  });
+
+  elements.usbReadButton.addEventListener("click", async () => {
+    try {
+      await readConfigFromUsb();
+    } catch (error) {
+      setStatus(`USB読込エラー: ${error.message}`);
+      window.alert(`USBでのM5読込に失敗しました: ${error.message}`);
+    }
+  });
+
+  elements.usbWriteButton.addEventListener("click", async () => {
+    try {
+      await writeConfigToUsb();
+    } catch (error) {
+      setStatus(`USB書込エラー: ${error.message}`);
+      window.alert(`USBでのM5書込に失敗しました: ${error.message}`);
+    }
+  });
 
   elements.bleConnectButton.addEventListener("click", async () => {
     try {
@@ -707,6 +922,7 @@ function bindEvents() {
     event.target.value = "";
   });
 
+  setUsbUiState();
   setBleUiState();
 }
 

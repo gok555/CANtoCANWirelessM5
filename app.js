@@ -639,8 +639,14 @@ async function connectUsbSerial() {
   serialState.reader = port.readable.getReader();
   serialState.writer = port.writable.getWriter();
   serialState.connected = true;
-  serialState.readableClosed = port.readable.closed.catch(() => {});
-  serialState.writableClosed = port.writable.closed.catch(() => {});
+  serialState.readableClosed =
+    port.readable && "closed" in port.readable && port.readable.closed
+      ? port.readable.closed.catch(() => {})
+      : null;
+  serialState.writableClosed =
+    port.writable && "closed" in port.writable && port.writable.closed
+      ? port.writable.closed.catch(() => {})
+      : null;
   setUsbUiState();
   setStatus("USB connected");
 

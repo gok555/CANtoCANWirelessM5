@@ -201,7 +201,7 @@
     <header class="header">
       <div>
         <h1>ワイヤレスCANブリッジ設定 Web版</h1>
-        <p>ブラウザ上で ID 設定を編集し、JSON とヘッダを保存できます。</p>
+        <p>設定編集、JSON保存、ヘッダ生成、M5への読込と書込ができます。</p>
       </div>
     </header>
 
@@ -210,11 +210,14 @@
         <button id="loadJsonButton">JSON読込</button>
         <button id="saveJsonButton">JSON保存</button>
         <button id="importTraceButton">実データ取込</button>
-        <button id="addCustomIdButton">ID手入力</button>
+        <button id="addCustomIdButton">ID手動追加</button>
         <button id="generateHeaderButton">ヘッダ生成</button>
+        <button id="usbConnectButton">USB接続</button>
+        <button id="usbReadButton" disabled>USB M5読込</button>
+        <button id="usbWriteButton" disabled>USB M5書込</button>
         <button id="bleConnectButton">BLE接続</button>
-        <button id="bleReadButton" disabled>M5読込</button>
-        <button id="bleWriteButton" disabled>M5書込</button>
+        <button id="bleReadButton" disabled>BLE M5読込</button>
+        <button id="bleWriteButton" disabled>BLE M5書込</button>
       </div>
       <div class="toolbar-group">
         <label>
@@ -244,7 +247,7 @@
     </section>
 
     <section class="note">
-      左は候補ID、中央は通すID、右は高優先IDです。実車やアナライザーのログを取り込んで、そのまま設定変更できます。
+      左は候補ID、中央は通すID、右は高優先IDです。実車やアナライザのログを取り込んで、そのまま設定変更できます。
     </section>
 
     <section class="columns">
@@ -296,7 +299,7 @@
     </details>
 
     <section class="guide">
-      使い方: 1) 実データ取込 2) 候補IDを選ぶ 3) 通すIDに追加 4) 必要なら高優先にする 5) JSON保存またはヘッダ生成 6) Arduinoへ書き込み
+      使い方: 1) 実データ取込 2) 候補IDを選ぶ 3) 通すIDへ追加 4) 必要なら高優先にする 5) JSON保存またはヘッダ生成 6) USBまたはBLEでM5へ反映
     </section>
 
     <footer class="status" id="statusBar">準備完了</footer>
@@ -305,6 +308,6 @@
     <input id="traceFileInput" type="file" accept=".trace,.txt,.log,.csv" multiple hidden>
   </main>
 
-  <script src="app.js?v=20260326d"></script>
+  <script src="app.js?v=20260328a"></script>
 </body>
 </html>

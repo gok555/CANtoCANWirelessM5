@@ -349,9 +349,12 @@ function refreshUi() {
   ensureValidConfig();
   elements.filterMode.value = state.config.filter_mode;
 
-  const availableAll = sortValues(uniqueSorted([...state.candidateIds]));
   const allowAll = sortValues(uniqueSorted(state.config.allow_all_ids));
   const highAll = sortValues(uniqueSorted(state.config.high_priority_ids));
+  const hiddenIds = new Set([...state.config.allow_all_ids, ...state.config.high_priority_ids]);
+  const availableAll = sortValues(
+    uniqueSorted([...state.candidateIds].filter((id) => !hiddenIds.has(id))),
+  );
 
   const availableFiltered = filterValues(availableAll, elements.availableFilter.value);
   const allowFiltered = filterValues(allowAll, elements.allowFilter.value);

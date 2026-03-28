@@ -65,7 +65,6 @@ const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 const FILTER_MODES = new Set(["ALLOW", "ALL"]);
-
 const hexPrefixPattern = /\b0x([0-9a-f]{1,8})\b/gi;
 const hexSuffixPattern = /\b([0-9a-f]{3,8})h\b/gi;
 
@@ -79,30 +78,24 @@ function delay(ms) {
 
 function setBleUiState() {
   const connected = bleState.connected;
-  elements.bleConnectButton.textContent = connected ? "BLE切断" : "BLE接続";
+  elements.bleConnectButton.textContent = connected ? "BLE Disconnect" : "BLE Connect";
   elements.bleReadButton.disabled = !connected;
   elements.bleWriteButton.disabled = !connected;
 }
 
 function setUsbUiState() {
   const connected = serialState.connected;
-  elements.usbConnectButton.textContent = connected ? "USB切断" : "USB接続";
+  elements.usbConnectButton.textContent = connected ? "USB Disconnect" : "USB Connect";
   elements.usbReadButton.disabled = !connected;
   elements.usbWriteButton.disabled = !connected;
 }
 
 function parseCanId(raw) {
   const text = String(raw).trim().toUpperCase();
-  if (!text) {
-    throw new Error("CAN ID が空です");
-  }
-  if (text.startsWith("0X")) {
-    return Number.parseInt(text.slice(2), 16);
-  }
-  if (/^[0-9A-F]+$/.test(text)) {
-    return Number.parseInt(text, 16);
-  }
-  throw new Error(`CAN ID の形式が不正です: ${raw}`);
+  if (!text) throw new Error("CAN ID is empty");
+  if (text.startsWith("0X")) return Number.parseInt(text.slice(2), 16);
+  if (/^[0-9A-F]+$/.test(text)) return Number.parseInt(text, 16);
+  throw new Error(`Bad CAN ID format: ${raw}`);
 }
 
 function formatCanId(value) {
@@ -143,7 +136,6 @@ function mergeStat(target, extra) {
   target.rx_count += extra.rx_count || 0;
   target.tx_count += extra.tx_count || 0;
   target.timed_count += extra.timed_count || 0;
-
   if (extra.first_ms !== null && Number.isFinite(extra.first_ms)) {
     target.first_ms = target.first_ms === null ? extra.first_ms : Math.min(target.first_ms, extra.first_ms);
   }
@@ -156,20 +148,15 @@ function mergeStat(target, extra) {
 }
 
 function estimateHz(stat) {
-  if (!stat || stat.timed_count <= 1 || stat.duration_ms <= 0) {
-    return null;
-  }
+  if (!stat || stat.timed_count <= 1 || stat.duration_ms <= 0) return null;
   return (stat.timed_count - 1) / (stat.duration_ms / 1000);
 }
 
 function updateStat(map, canId, offsetMs, direction) {
   const stat = map.get(canId) || emptyStat();
   stat.count += 1;
-  if (direction === "Rx") {
-    stat.rx_count += 1;
-  } else if (direction === "Tx") {
-    stat.tx_count += 1;
-  }
+  if (direction === "Rx") stat.rx_count += 1;
+  if (direction === "Tx") stat.tx_count += 1;
   if (offsetMs !== null && Number.isFinite(offsetMs)) {
     stat.timed_count += 1;
     stat.first_ms = stat.first_ms === null ? offsetMs : Math.min(stat.first_ms, offsetMs);
@@ -187,17 +174,15 @@ function finalizeStats(map) {
 }
 
 function directionMatches(mode, direction) {
-  if (mode === "両方") return true;
-  if (mode === "Rxのみ") return direction === "Rx";
-  if (mode === "Txのみ") return direction === "Tx";
+  if (mode === "both") return true;
+  if (mode === "rx") return direction === "Rx";
+  if (mode === "tx") return direction === "Tx";
   return true;
 }
 
 function extractDirection(line) {
   if (/\bRx\b/i.test(line)) return "Rx";
   if (/\bTx\b/i.test(line)) return "Tx";
-  if (/\bRX\b/.test(line)) return "Rx";
-  if (/\bTX\b/.test(line)) return "Tx";
   return null;
 }
 
@@ -210,72 +195,42 @@ function parseTimestampMs(line) {
   }
 
   const prefixMatch = line.match(/^\s*(\d+(?:\.\d+)?)\s*(ms|s)?(?:\s|,|;)/i);
-  if (!prefixMatch) {
-    return null;
-  }
+  if (!prefixMatch) return null;
 
   const value = Number.parseFloat(prefixMatch[1]);
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-  if (prefixMatch[2]?.toLowerCase() === "s") {
-    return value * 1000;
-  }
-  if (prefixMatch[2]?.toLowerCase() === "ms") {
-    return value;
-  }
-  if (prefixMatch[1].includes(".")) {
-    return value * 1000;
-  }
+  if (!Number.isFinite(value)) return null;
+  if (prefixMatch[2]?.toLowerCase() === "s") return value * 1000;
+  if (prefixMatch[2]?.toLowerCase() === "ms") return value;
+  if (prefixMatch[1].includes(".")) return value * 1000;
   return value;
 }
 
 function extractCanIds(line) {
   const ids = [];
-
-  for (const match of line.matchAll(hexPrefixPattern)) {
-    ids.push(Number.parseInt(match[1], 16));
-  }
-  for (const match of line.matchAll(hexSuffixPattern)) {
-    ids.push(Number.parseInt(match[1], 16));
-  }
-
-  if (ids.length > 0) {
-    return ids;
-  }
+  for (const match of line.matchAll(hexPrefixPattern)) ids.push(Number.parseInt(match[1], 16));
+  for (const match of line.matchAll(hexSuffixPattern)) ids.push(Number.parseInt(match[1], 16));
+  if (ids.length > 0) return ids;
 
   const bareMatches = line.match(/\b[0-9A-F]{3,4}\b/gi) || [];
-  for (const text of bareMatches) {
-    ids.push(Number.parseInt(text, 16));
-  }
+  for (const text of bareMatches) ids.push(Number.parseInt(text, 16));
   return ids;
 }
 
 function parseTraceText(text, importMode) {
   const fileStats = new Map();
-
   for (const rawLine of String(text).split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
+    if (!line) continue;
 
     const ids = extractCanIds(line);
-    if (!ids.length) {
-      continue;
-    }
+    if (!ids.length) continue;
 
     const direction = extractDirection(line);
-    if (direction && !directionMatches(importMode, direction)) {
-      continue;
-    }
+    if (direction && !directionMatches(importMode, direction)) continue;
 
     const timestampMs = parseTimestampMs(line);
-    for (const canId of ids) {
-      updateStat(fileStats, canId, timestampMs, direction);
-    }
+    for (const canId of ids) updateStat(fileStats, canId, timestampMs, direction);
   }
-
   finalizeStats(fileStats);
   return fileStats;
 }
@@ -283,24 +238,15 @@ function parseTraceText(text, importMode) {
 function formatLabel(canId) {
   const label = formatCanId(canId);
   const stat = state.idStats.get(canId);
-  if (!stat) {
-    return label;
-  }
+  if (!stat) return label;
 
-  const extras = [`${stat.count}回`];
-  if (stat.rx_count && stat.tx_count) {
-    extras.push(`Rx${stat.rx_count}/Tx${stat.tx_count}`);
-  } else if (stat.rx_count) {
-    extras.push(`Rx${stat.rx_count}`);
-  } else if (stat.tx_count) {
-    extras.push(`Tx${stat.tx_count}`);
-  }
+  const extras = [`${stat.count} cnt`];
+  if (stat.rx_count && stat.tx_count) extras.push(`Rx${stat.rx_count}/Tx${stat.tx_count}`);
+  else if (stat.rx_count) extras.push(`Rx${stat.rx_count}`);
+  else if (stat.tx_count) extras.push(`Tx${stat.tx_count}`);
 
   const hz = estimateHz(stat);
-  if (hz !== null) {
-    extras.push(`${hz.toFixed(1)}Hz`);
-  }
-
+  if (hz !== null) extras.push(`${hz.toFixed(1)}Hz`);
   return `${label} (${extras.join(", ")})`;
 }
 
@@ -308,7 +254,7 @@ function sortValues(values) {
   const mode = elements.sortMode.value;
   const sorted = [...values];
 
-  if (mode === "通信回数順") {
+  if (mode === "traffic") {
     sorted.sort((a, b) => {
       const ac = state.idStats.get(a)?.count || 0;
       const bc = state.idStats.get(b)?.count || 0;
@@ -317,7 +263,7 @@ function sortValues(values) {
     return sorted;
   }
 
-  if (mode === "推定Hz順") {
+  if (mode === "rate") {
     sorted.sort((a, b) => {
       const ah = estimateHz(state.idStats.get(a));
       const bh = estimateHz(state.idStats.get(b));
@@ -357,10 +303,8 @@ function rankIdsByRate(values) {
 }
 
 function filterValues(values, text) {
-  const needle = text.trim().toLowerCase();
-  if (!needle) {
-    return values;
-  }
+  const needle = String(text || "").trim().toLowerCase();
+  if (!needle) return values;
   return values.filter((id) => formatLabel(id).toLowerCase().includes(needle));
 }
 
@@ -379,9 +323,9 @@ function selectedIds(select) {
 }
 
 function updateTitles(availableAll, availableFiltered, allowAll, allowFiltered, highAll, highFiltered) {
-  elements.availableTitle.textContent = `候補ID (${availableFiltered.length} / ${availableAll.length})`;
-  elements.allowTitle.textContent = `通すID (${allowFiltered.length} / ${allowAll.length})`;
-  elements.highTitle.textContent = `高優先ID (${highFiltered.length} / ${highAll.length})`;
+  elements.availableTitle.textContent = `Candidates (${availableFiltered.length} / ${availableAll.length})`;
+  elements.allowTitle.textContent = `Allow (${allowFiltered.length} / ${allowAll.length})`;
+  elements.highTitle.textContent = `High (${highFiltered.length} / ${highAll.length})`;
 }
 
 function renderHeaderText() {
@@ -392,7 +336,6 @@ function renderHeaderText() {
     "#pragma once",
     "",
     "// Auto-generated by BridgeConfigToolWeb/app.js",
-    "// Do not edit manually; regenerate from bridge_ids.json.",
     "",
     "#include <stdint.h>",
     "",
@@ -433,61 +376,47 @@ function saveBlob(filename, content, type) {
 
 function currentJsonText() {
   ensureValidConfig();
-  return `${JSON.stringify(
-    {
-      filter_mode: state.config.filter_mode,
-      allow_all_ids: state.config.allow_all_ids.map(formatCanId),
-      high_priority_ids: state.config.high_priority_ids.map(formatCanId),
-    },
-    null,
-    2,
-  )}\n`;
+  return `${JSON.stringify({
+    filter_mode: state.config.filter_mode,
+    allow_all_ids: state.config.allow_all_ids.map(formatCanId),
+    high_priority_ids: state.config.high_priority_ids.map(formatCanId),
+  }, null, 2)}\n`;
 }
 
 function parseIdArrayText(text) {
   const trimmed = String(text || "").trim();
-  if (!trimmed) {
-    return [];
-  }
-  return trimmed
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map(parseCanId);
+  if (!trimmed) return [];
+  return trimmed.split(",").map((token) => token.trim()).filter(Boolean).map(parseCanId);
 }
 
 async function handleJsonLoad(file) {
-  const text = await file.text();
-  const data = JSON.parse(text);
-  state.config.filter_mode = normalizeFilterMode(data.filter_mode);
+  const data = JSON.parse(await file.text());
+  state.config.filter_mode = normalizeFilterMode(data.filter_mode || "ALLOW");
   state.config.allow_all_ids = (data.allow_all_ids || []).map(parseCanId);
   state.config.high_priority_ids = (data.high_priority_ids || []).map(parseCanId);
 
-  for (const id of state.config.allow_all_ids) {
-    state.candidateIds.add(id);
-  }
-  for (const id of state.config.high_priority_ids) {
-    state.candidateIds.add(id);
-  }
+  for (const id of state.config.allow_all_ids) state.candidateIds.add(id);
+  for (const id of state.config.high_priority_ids) state.candidateIds.add(id);
 
   refreshUi();
-  setStatus(`JSONを読み込みました: ${file.name}`);
+  setStatus(`JSON loaded: ${file.name}`);
 }
 
 async function handleTraceImport(files) {
   const merged = new Map();
-
   for (const file of files) {
     const text = await file.text();
     const stats = parseTraceText(text, elements.importMode.value);
-    for (const [canId, stat] of stats) {
+    for (const [canId, stat] of stats.entries()) {
       const current = merged.get(canId) || emptyStat();
       mergeStat(current, stat);
       merged.set(canId, current);
     }
   }
 
-  for (const [canId, stat] of merged) {
+  finalizeStats(merged);
+
+  for (const [canId, stat] of merged.entries()) {
     state.candidateIds.add(canId);
     const current = state.idStats.get(canId) || emptyStat();
     mergeStat(current, stat);
@@ -495,7 +424,7 @@ async function handleTraceImport(files) {
   }
 
   refreshUi();
-  setStatus(`${elements.importMode.value}で ${files.length} ファイルから ${merged.size} 件のIDを取り込みました`);
+  setStatus(`Imported ${merged.size} IDs from ${files.length} file(s)`);
 }
 
 function moveToAllow() {
@@ -524,28 +453,25 @@ function removeFromHigh() {
 }
 
 function addCustomId() {
-  const raw = window.prompt("16進数で入力してください。例: 4E0 または 0x4E0");
-  if (!raw) {
-    return;
-  }
+  const raw = window.prompt("Enter CAN ID in hex. Example: 4E0 or 0x4E0");
+  if (!raw) return;
   try {
     const canId = parseCanId(raw);
     state.candidateIds.add(canId);
     refreshUi();
-    setStatus(`${formatCanId(canId)} を候補IDに追加しました`);
+    setStatus(`Added ${formatCanId(canId)} to candidates`);
   } catch (error) {
     window.alert(error.message);
   }
 }
 
 function autoAssignByMetric(metric) {
-  const ranked =
-    metric === "traffic"
-      ? rankIdsByTraffic(uniqueSorted([...state.candidateIds]))
-      : rankIdsByRate(uniqueSorted([...state.candidateIds]));
+  const ranked = metric === "traffic"
+    ? rankIdsByTraffic(uniqueSorted([...state.candidateIds]))
+    : rankIdsByRate(uniqueSorted([...state.candidateIds]));
 
   if (!ranked.length) {
-    window.alert("先に実データを取り込むか、候補IDを追加してください。");
+    window.alert("Import trace first, or add candidate IDs.");
     return;
   }
 
@@ -554,28 +480,22 @@ function autoAssignByMetric(metric) {
   state.config.high_priority_ids = uniqueSorted(ranked.slice(0, Math.min(highCount, ranked.length)));
   refreshUi();
 
-  const label = metric === "traffic" ? "通信量順" : "速度順";
-  setStatus(`${label}で自動振分しました。通すID ${state.config.allow_all_ids.length}件 / 高優先 ${state.config.high_priority_ids.length}件`);
+  const label = metric === "traffic" ? "COUNT" : "RATE";
+  setStatus(`Auto assign by ${label}: allow ${state.config.allow_all_ids.length}, high ${state.config.high_priority_ids.length}`);
 }
 
 async function sendBleCommand(command) {
-  if (!bleState.connected || !bleState.rxChar) {
-    throw new Error("BLE接続されていません");
-  }
+  if (!bleState.connected || !bleState.rxChar) throw new Error("BLE is not connected");
   await bleState.rxChar.writeValue(new TextEncoder().encode(command));
 }
 
 async function sendSerialCommand(command) {
-  if (!serialState.connected || !serialState.writer) {
-    throw new Error("USB接続されていません");
-  }
+  if (!serialState.connected || !serialState.writer) throw new Error("USB is not connected");
   await serialState.writer.write(`${command}\n`);
 }
 
 function shouldIgnoreDeviceMessage(message) {
-  if (!message) {
-    return true;
-  }
+  if (!message) return true;
   if (message.startsWith("[BLE] cmd:")) return true;
   if (message.startsWith("[BOOT]")) return true;
   if (message.startsWith("ESP-ROM:")) return true;
@@ -587,39 +507,25 @@ function shouldIgnoreDeviceMessage(message) {
 
 async function closeSerialPort() {
   if (serialState.reader) {
-    try {
-      await serialState.reader.cancel();
-    } catch {}
+    try { await serialState.reader.cancel(); } catch {}
     serialState.reader.releaseLock();
     serialState.reader = null;
   }
-
   if (serialState.writer) {
-    try {
-      await serialState.writer.close();
-    } catch {}
+    try { await serialState.writer.close(); } catch {}
     serialState.writer.releaseLock();
     serialState.writer = null;
   }
-
   if (serialState.readableClosed) {
-    try {
-      await serialState.readableClosed;
-    } catch {}
+    try { await serialState.readableClosed; } catch {}
     serialState.readableClosed = null;
   }
-
   if (serialState.writableClosed) {
-    try {
-      await serialState.writableClosed;
-    } catch {}
+    try { await serialState.writableClosed; } catch {}
     serialState.writableClosed = null;
   }
-
   if (serialState.port) {
-    try {
-      await serialState.port.close();
-    } catch {}
+    try { await serialState.port.close(); } catch {}
     serialState.port = null;
   }
 }
@@ -633,7 +539,7 @@ function handleBleDisconnect() {
   bleState.connected = false;
   bleState.role = "";
   setBleUiState();
-  setStatus("BLE接続が切れました");
+  setStatus("BLE disconnected");
 }
 
 async function handleUsbDisconnect() {
@@ -641,197 +547,127 @@ async function handleUsbDisconnect() {
   serialState.role = "";
   setUsbUiState();
   await closeSerialPort();
-  setStatus("USB接続が切れました");
+  setStatus("USB disconnected");
 }
 
 function applyDeviceMessage(message) {
-  if (!message || shouldIgnoreDeviceMessage(message)) {
-    return;
-  }
+  if (!message || shouldIgnoreDeviceMessage(message)) return;
 
   if (message.startsWith("ROLE=")) {
     const role = message.substring(5);
     bleState.role = role;
     serialState.role = role;
-    setStatus(`接続先: ${role || "M5"}`);
+    setStatus(`Target: ${role || "M5"}`);
     return;
   }
-
   if (message.startsWith("FILTER=")) {
     state.config.filter_mode = normalizeFilterMode(message.substring(7));
     refreshUi();
     return;
   }
-
   if (message.startsWith("ALLOW=")) {
     state.config.allow_all_ids = parseIdArrayText(message.substring(6));
-    for (const id of state.config.allow_all_ids) {
-      state.candidateIds.add(id);
-    }
+    for (const id of state.config.allow_all_ids) state.candidateIds.add(id);
     refreshUi();
     return;
   }
-
   if (message.startsWith("HIGH=")) {
     state.config.high_priority_ids = parseIdArrayText(message.substring(5));
-    for (const id of state.config.high_priority_ids) {
-      state.candidateIds.add(id);
-    }
+    for (const id of state.config.high_priority_ids) state.candidateIds.add(id);
     refreshUi();
     return;
   }
-
   if (message === "CFG_DONE") {
     refreshUi();
     const role = serialState.role || bleState.role;
-    setStatus(`M5${role ? `(${role})` : ""} の設定を読み込みました`);
+    setStatus(`Read config from M5${role ? ` (${role})` : ""}`);
     return;
   }
-
   if (message === "CFG_SAVED") {
-    const role = serialState.role || bleState.role;
-    setStatus(`M5${role ? `(${role})` : ""} に設定を保存しました`);
+    setStatus("Config saved to M5");
     return;
   }
-
   if (message === "CFG_RESET") {
-    const role = serialState.role || bleState.role;
-    setStatus(`M5${role ? `(${role})` : ""} を初期設定へ戻しました`);
+    setStatus("Config reset on M5");
     return;
   }
-
-  if (
-    message.startsWith("ALLOW_OK=") ||
-    message.startsWith("HIGH_OK=") ||
-    message.startsWith("FILTER_OK=") ||
-    message.startsWith("SYNC_") ||
-    message === "PONG"
-  ) {
-    return;
-  }
-
   if (message.startsWith("ERR=")) {
-    setStatus(`M5エラー: ${message}`);
+    setStatus(`M5 error: ${message.substring(4)}`);
     return;
   }
-
-  setStatus(`受信: ${message}`);
+  if (message.startsWith("SYNC_") || message === "PONG") return;
 }
 
-async function readSerialLoop() {
-  let buffer = "";
-  try {
-    while (serialState.connected && serialState.reader) {
-      const { value, done } = await serialState.reader.read();
-      if (done) {
-        break;
-      }
-      buffer += value;
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        applyDeviceMessage(line.trim());
-      }
-    }
-  } catch (error) {
-    if (serialState.connected) {
-      setStatus(`USB受信エラー: ${error.message}`);
-    }
-  } finally {
-    if (serialState.connected) {
-      await handleUsbDisconnect();
-    }
+async function pumpSerialReader() {
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (serialState.connected && serialState.reader) {
+    const { value, done } = await serialState.reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    const parts = pending.split(/\r?\n/);
+    pending = parts.pop() || "";
+    for (const part of parts) applyDeviceMessage(part.trim());
   }
 }
 
 async function connectUsbSerial() {
-  if (!("serial" in navigator)) {
-    window.alert("このブラウザは Web Serial に対応していません。Chrome か Edge を使ってください。");
-    return;
-  }
-
   if (serialState.connected) {
     await handleUsbDisconnect();
+    return;
+  }
+  if (!("serial" in navigator)) {
+    window.alert("Web Serial is not supported in this browser. Use Chrome or Edge.");
     return;
   }
 
   const port = await navigator.serial.requestPort();
   await port.open({ baudRate: 115200 });
 
-  const decoder = new TextDecoderStream();
-  serialState.readableClosed = port.readable.pipeTo(decoder.writable);
-  serialState.reader = decoder.readable.getReader();
-
-  const encoder = new TextEncoderStream();
-  serialState.writableClosed = encoder.readable.pipeTo(port.writable);
-  serialState.writer = encoder.writable.getWriter();
-
   serialState.port = port;
+  serialState.reader = port.readable.getReader();
+  serialState.writer = port.writable.getWriter();
   serialState.connected = true;
+  serialState.readableClosed = port.readable.closed.catch(() => {});
+  serialState.writableClosed = port.writable.closed.catch(() => {});
   setUsbUiState();
-  setStatus("USB接続しました");
-  readSerialLoop();
+  setStatus("USB connected");
+
+  pumpSerialReader().catch(async () => {
+    if (serialState.connected) await handleUsbDisconnect();
+  });
+
   await delay(80);
   await sendSerialCommand("PING");
 }
 
-function handleBleNotification(event) {
-  const value = new TextDecoder().decode(event.target.value);
-  applyDeviceMessage(value.trim());
-}
-
 async function connectBle() {
-  if (!("bluetooth" in navigator)) {
-    window.alert("このブラウザは Web Bluetooth に対応していません。Chrome か Edge を使ってください。");
+  if (bleState.connected) {
+    if (bleState.device?.gatt?.connected) bleState.device.gatt.disconnect();
+    handleBleDisconnect();
     return;
   }
-
-  if (bleState.connected) {
-    if (bleState.device?.gatt?.connected) {
-      bleState.device.gatt.disconnect();
-    }
-    handleBleDisconnect();
+  if (!navigator.bluetooth) {
+    window.alert("Web Bluetooth is not supported in this browser. Use Chrome or Edge.");
     return;
   }
 
   const device = await navigator.bluetooth.requestDevice({
-    filters: [{ namePrefix: "M5" }],
+    filters: [{ services: [BLE_SERVICE_UUID] }],
     optionalServices: [BLE_SERVICE_UUID],
   });
-
   device.addEventListener("gattserverdisconnected", handleBleDisconnect);
 
-  let server = null;
-  let service = null;
-  let txChar = null;
-  let rxChar = null;
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      server = await device.gatt.connect();
-      await delay(500);
-      service = await server.getPrimaryService(BLE_SERVICE_UUID);
-      await delay(150);
-      txChar = await service.getCharacteristic(BLE_TX_UUID);
-      rxChar = await service.getCharacteristic(BLE_RX_UUID);
-      lastError = null;
-      break;
-    } catch (error) {
-      lastError = error;
-      if (device.gatt.connected) {
-        device.gatt.disconnect();
-      }
-      await delay(600);
-    }
-  }
-
-  if (lastError) {
-    throw new Error(`GATT接続に失敗しました: ${lastError.message}`);
-  }
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+  const txChar = await service.getCharacteristic(BLE_TX_UUID);
+  const rxChar = await service.getCharacteristic(BLE_RX_UUID);
 
   await txChar.startNotifications();
-  txChar.addEventListener("characteristicvaluechanged", handleBleNotification);
+  txChar.addEventListener("characteristicvaluechanged", (event) => {
+    const value = new TextDecoder().decode(event.target.value);
+    for (const line of value.split(/\r?\n/)) applyDeviceMessage(line.trim());
+  });
 
   bleState.device = device;
   bleState.server = server;
@@ -840,17 +676,15 @@ async function connectBle() {
   bleState.rxChar = rxChar;
   bleState.connected = true;
   setBleUiState();
-  setStatus(`BLE接続しました: ${device.name || "M5"}`);
+  setStatus("BLE connected");
 }
 
 async function readConfigFromBle() {
-  await delay(500);
   await sendBleCommand("REQUEST_CFG");
-  setStatus("BLE経由でM5設定を読込中です");
+  setStatus("Reading M5 config over BLE");
 }
 
 async function writeConfigToBle() {
-  ensureValidConfig();
   const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
   const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
   await sendBleCommand(`SET_FILTER=${state.config.filter_mode}`);
@@ -858,16 +692,15 @@ async function writeConfigToBle() {
   await sendBleCommand(`SET_HIGH=${highLine}`);
   await sendBleCommand("SAVE_CFG");
   await sendBleCommand("REQUEST_CFG");
-  setStatus("BLE経由でM5へ設定を書込中です");
+  setStatus("Writing config to M5 over BLE");
 }
 
 async function readConfigFromUsb() {
   await sendSerialCommand("REQUEST_CFG");
-  setStatus("USB経由でM5設定を読込中です");
+  setStatus("Reading M5 config over USB");
 }
 
 async function writeConfigToUsb() {
-  ensureValidConfig();
   const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
   const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
   await sendSerialCommand(`SET_FILTER=${state.config.filter_mode}`);
@@ -879,28 +712,28 @@ async function writeConfigToUsb() {
   await sendSerialCommand("SAVE_CFG");
   await delay(120);
   await sendSerialCommand("REQUEST_CFG");
-  setStatus("USB経由でM5へ設定を書込中です");
+  setStatus("Writing config to M5 over USB");
 }
 
 function bindEvents() {
   document.getElementById("loadJsonButton").addEventListener("click", () => elements.jsonFileInput.click());
   document.getElementById("saveJsonButton").addEventListener("click", () => {
     saveBlob("bridge_ids.json", currentJsonText(), "application/json");
-    setStatus("bridge_ids.json を保存しました");
+    setStatus("Saved bridge_ids.json");
   });
   document.getElementById("importTraceButton").addEventListener("click", () => elements.traceFileInput.click());
   document.getElementById("addCustomIdButton").addEventListener("click", addCustomId);
   document.getElementById("generateHeaderButton").addEventListener("click", () => {
     elements.headerPreview.value = renderHeaderText();
-    setStatus("ヘッダを生成しました");
+    setStatus("Header generated");
   });
   document.getElementById("downloadAHeaderButton").addEventListener("click", () => {
     saveBlob(headerTargets.a, renderHeaderText(), "text/plain;charset=utf-8");
-    setStatus(`${headerTargets.a} を保存しました`);
+    setStatus(`Saved ${headerTargets.a}`);
   });
   document.getElementById("downloadBHeaderButton").addEventListener("click", () => {
     saveBlob(headerTargets.b, renderHeaderText(), "text/plain;charset=utf-8");
-    setStatus(`${headerTargets.b} を保存しました`);
+    setStatus(`Saved ${headerTargets.b}`);
   });
 
   document.getElementById("toAllowButton").addEventListener("click", moveToAllow);
@@ -915,26 +748,24 @@ function bindEvents() {
     try {
       await connectUsbSerial();
     } catch (error) {
-      setStatus(`USB接続エラー: ${error.message}`);
-      window.alert(`USB接続に失敗しました: ${error.message}`);
+      setStatus(`USB error: ${error.message}`);
+      window.alert(`USB connect failed: ${error.message}`);
     }
   });
-
   elements.usbReadButton.addEventListener("click", async () => {
     try {
       await readConfigFromUsb();
     } catch (error) {
-      setStatus(`USB読込エラー: ${error.message}`);
-      window.alert(`USBでのM5読込に失敗しました: ${error.message}`);
+      setStatus(`USB read error: ${error.message}`);
+      window.alert(`USB read failed: ${error.message}`);
     }
   });
-
   elements.usbWriteButton.addEventListener("click", async () => {
     try {
       await writeConfigToUsb();
     } catch (error) {
-      setStatus(`USB書込エラー: ${error.message}`);
-      window.alert(`USBでのM5書込に失敗しました: ${error.message}`);
+      setStatus(`USB write error: ${error.message}`);
+      window.alert(`USB write failed: ${error.message}`);
     }
   });
 
@@ -942,26 +773,24 @@ function bindEvents() {
     try {
       await connectBle();
     } catch (error) {
-      setStatus(`BLE接続エラー: ${error.message}`);
-      window.alert(`BLE接続に失敗しました: ${error.message}`);
+      setStatus(`BLE error: ${error.message}`);
+      window.alert(`BLE connect failed: ${error.message}`);
     }
   });
-
   elements.bleReadButton.addEventListener("click", async () => {
     try {
       await readConfigFromBle();
     } catch (error) {
-      setStatus(`BLE読込エラー: ${error.message}`);
-      window.alert(`BLEでのM5読込に失敗しました: ${error.message}`);
+      setStatus(`BLE read error: ${error.message}`);
+      window.alert(`BLE read failed: ${error.message}`);
     }
   });
-
   elements.bleWriteButton.addEventListener("click", async () => {
     try {
       await writeConfigToBle();
     } catch (error) {
-      setStatus(`BLE書込エラー: ${error.message}`);
-      window.alert(`BLEでのM5書込に失敗しました: ${error.message}`);
+      setStatus(`BLE write error: ${error.message}`);
+      window.alert(`BLE write failed: ${error.message}`);
     }
   });
 
@@ -987,7 +816,7 @@ function bindEvents() {
       try {
         await handleJsonLoad(file);
       } catch (error) {
-        window.alert(`JSON読込に失敗しました: ${error.message}`);
+        window.alert(`JSON load failed: ${error.message}`);
       }
     }
     event.target.value = "";
@@ -999,16 +828,15 @@ function bindEvents() {
       try {
         await handleTraceImport(files);
       } catch (error) {
-        window.alert(`実データ取込に失敗しました: ${error.message}`);
+        window.alert(`Trace import failed: ${error.message}`);
       }
     }
     event.target.value = "";
   });
-
-  setUsbUiState();
-  setBleUiState();
 }
 
-refreshUi();
 bindEvents();
-setStatus("準備完了");
+refreshUi();
+setBleUiState();
+setUsbUiState();
+setStatus("READY");

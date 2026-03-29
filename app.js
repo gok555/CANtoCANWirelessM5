@@ -6,6 +6,7 @@ const state = {
   },
   candidateIds: new Set(),
   idStats: new Map(),
+  lastTraceStats: new Map(),
 };
 
 const headerTargets = {
@@ -19,11 +20,15 @@ const elements = {
   importMode: document.getElementById("importMode"),
   filterMode: document.getElementById("filterMode"),
   autoHighCount: document.getElementById("autoHighCount"),
+  autoAllowCount: document.getElementById("autoAllowCount"),
   autoAssignTrafficButton: document.getElementById("autoAssignTrafficButton"),
   autoAssignRateButton: document.getElementById("autoAssignRateButton"),
+  buildStrictFromTraceButton: document.getElementById("buildStrictFromTraceButton"),
   usbConnectButton: document.getElementById("usbConnectButton"),
   usbReadButton: document.getElementById("usbReadButton"),
   usbWriteButton: document.getElementById("usbWriteButton"),
+  usbClearLiveButton: document.getElementById("usbClearLiveButton"),
+  usbImportLiveButton: document.getElementById("usbImportLiveButton"),
   bleConnectButton: document.getElementById("bleConnectButton"),
   bleReadButton: document.getElementById("bleReadButton"),
   bleWriteButton: document.getElementById("bleWriteButton"),
@@ -61,15 +66,62 @@ const serialState = {
   role: "",
 };
 
+let ignoreIncomingConfigSnapshot = false;
+const pendingDeviceResponses = [];
+let pendingObservedStats = null;
+
 const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 const FILTER_MODES = new Set(["ALLOW", "ALL"]);
+const DEVICE_MAX_CONFIG_IDS = 128;
+const SERIAL_TX_CHUNK_BYTES = 48;
+const SERIAL_TX_CHUNK_DELAY_MS = 4;
 const hexPrefixPattern = /\b0x([0-9a-f]{1,8})\b/gi;
 const hexSuffixPattern = /\b([0-9a-f]{3,8})h\b/gi;
+const textEncoder = new TextEncoder();
 
 function setStatus(message) {
   elements.statusBar.textContent = message;
+}
+
+function notifyDeviceResponse(message) {
+  for (let i = pendingDeviceResponses.length - 1; i >= 0; i -= 1) {
+    const entry = pendingDeviceResponses[i];
+    if (!entry.matcher(message)) continue;
+    pendingDeviceResponses.splice(i, 1);
+    clearTimeout(entry.timerId);
+    entry.resolve(message);
+  }
+}
+
+function clearPendingDeviceResponses() {
+  while (pendingDeviceResponses.length > 0) {
+    const entry = pendingDeviceResponses.pop();
+    clearTimeout(entry.timerId);
+  }
+}
+
+function waitForDeviceResponse(label, matcher, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const entry = {
+      matcher,
+      resolve,
+      reject,
+      timerId: setTimeout(() => {
+        const index = pendingDeviceResponses.indexOf(entry);
+        if (index >= 0) pendingDeviceResponses.splice(index, 1);
+        reject(new Error(`${label} timed out waiting for M5 response`));
+      }, timeoutMs),
+    };
+    pendingDeviceResponses.push(entry);
+  });
+}
+
+function throwIfDeviceError(step, response) {
+  if (response && response.startsWith("ERR=")) {
+    throw new Error(`${step} failed: ${response.substring(4)}`);
+  }
 }
 
 function delay(ms) {
@@ -88,6 +140,8 @@ function setUsbUiState() {
   elements.usbConnectButton.textContent = connected ? "USB Disconnect" : "USB Connect";
   elements.usbReadButton.disabled = !connected;
   elements.usbWriteButton.disabled = !connected;
+  elements.usbClearLiveButton.disabled = !connected;
+  elements.usbImportLiveButton.disabled = !connected;
 }
 
 function parseCanId(raw) {
@@ -206,14 +260,37 @@ function parseTimestampMs(line) {
 }
 
 function extractCanIds(line) {
+  const sanitized = line.replace(/^\s*\d+:\s+/, "");
   const ids = [];
-  for (const match of line.matchAll(hexPrefixPattern)) ids.push(Number.parseInt(match[1], 16));
-  for (const match of line.matchAll(hexSuffixPattern)) ids.push(Number.parseInt(match[1], 16));
+  for (const match of sanitized.matchAll(hexPrefixPattern)) ids.push(Number.parseInt(match[1], 16));
+  for (const match of sanitized.matchAll(hexSuffixPattern)) ids.push(Number.parseInt(match[1], 16));
   if (ids.length > 0) return ids;
 
-  const bareMatches = line.match(/\b[0-9A-F]{3,4}\b/gi) || [];
+  const bareMatches = sanitized.match(/\b[0-9A-F]{3,8}\b/gi) || [];
   for (const text of bareMatches) ids.push(Number.parseInt(text, 16));
   return ids;
+}
+
+function parseStructuredTraceLine(line) {
+  const ecumasterMatch = line.match(/^\s*\d+:\s+(\d+(?:\.\d+)?)\s+(Rx|Tx)\s+([0-9A-F]{3,8})\s+\d+\b/i);
+  if (ecumasterMatch) {
+    return {
+      timestampMs: Number.parseFloat(ecumasterMatch[1]),
+      direction: ecumasterMatch[2],
+      ids: [Number.parseInt(ecumasterMatch[3], 16)],
+    };
+  }
+
+  const genericMatch = line.match(/\b(Rx|Tx)\b.*?\b(?:0x)?([0-9A-F]{3,8})\b/i);
+  if (genericMatch) {
+    return {
+      timestampMs: parseTimestampMs(line),
+      direction: genericMatch[1],
+      ids: [Number.parseInt(genericMatch[2], 16)],
+    };
+  }
+
+  return null;
 }
 
 function parseTraceText(text, importMode) {
@@ -221,14 +298,17 @@ function parseTraceText(text, importMode) {
   for (const rawLine of String(text).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
+    if (line.startsWith(";")) continue;
 
-    const ids = extractCanIds(line);
+    const structured = parseStructuredTraceLine(line);
+    const ids = structured?.ids || extractCanIds(line);
     if (!ids.length) continue;
 
-    const direction = extractDirection(line);
+    const direction = structured?.direction || extractDirection(line);
+    if (!direction) continue;
     if (direction && !directionMatches(importMode, direction)) continue;
 
-    const timestampMs = parseTimestampMs(line);
+    const timestampMs = structured?.timestampMs ?? parseTimestampMs(line);
     for (const canId of ids) updateStat(fileStats, canId, timestampMs, direction);
   }
   finalizeStats(fileStats);
@@ -392,6 +472,29 @@ function parseIdArrayText(text) {
   return trimmed.split(",").map((token) => token.trim()).filter(Boolean).map(parseCanId);
 }
 
+function parseObservedStatMessage(message) {
+  const payload = String(message || "").substring(4);
+  const parts = payload.split(",").map((part) => part.trim());
+  if (parts.length < 4) throw new Error(`Bad OBS message: ${message}`);
+
+  const canId = parseCanId(parts[0]);
+  const count = Number.parseInt(parts[1], 10);
+  const firstMs = Number.parseInt(parts[2], 10);
+  const lastMs = Number.parseInt(parts[3], 10);
+  if (!Number.isFinite(count) || count <= 0) throw new Error(`Bad OBS count: ${message}`);
+
+  const stat = emptyStat();
+  stat.count = count;
+  stat.rx_count = count;
+  if (Number.isFinite(firstMs) && Number.isFinite(lastMs) && lastMs >= firstMs) {
+    stat.first_ms = firstMs;
+    stat.last_ms = lastMs;
+    stat.timed_count = count;
+    stat.duration_ms = Math.max(0, lastMs - firstMs);
+  }
+  return { canId, stat };
+}
+
 async function handleJsonLoad(file) {
   const data = JSON.parse(await file.text());
   state.config.filter_mode = normalizeFilterMode(data.filter_mode || "ALLOW");
@@ -418,16 +521,18 @@ async function handleTraceImport(files) {
   }
 
   finalizeStats(merged);
+  state.lastTraceStats = new Map();
 
   for (const [canId, stat] of merged.entries()) {
     state.candidateIds.add(canId);
+    state.lastTraceStats.set(canId, { ...stat });
     const current = state.idStats.get(canId) || emptyStat();
     mergeStat(current, stat);
     state.idStats.set(canId, current);
   }
 
   refreshUi();
-  setStatus(`Imported ${merged.size} IDs from ${files.length} file(s)`);
+  setStatus(`Imported ${merged.size} IDs from ${files.length} file(s). Next: Auto By Count / Auto By Rate.`);
 }
 
 function moveToAllow() {
@@ -485,24 +590,87 @@ function autoAssignByMetric(metric) {
     return;
   }
 
+  const allowCount = Math.max(
+    1,
+    Math.min(
+      DEVICE_MAX_CONFIG_IDS,
+      Number.parseInt(elements.autoAllowCount.value, 10) || DEVICE_MAX_CONFIG_IDS,
+    ),
+  );
   const highCount = Math.max(0, Number.parseInt(elements.autoHighCount.value, 10) || 0);
-  state.config.allow_all_ids = uniqueSorted(ranked);
-  state.config.high_priority_ids = uniqueSorted(ranked.slice(0, Math.min(highCount, ranked.length)));
+  const allowIds = ranked.slice(0, Math.min(allowCount, ranked.length));
+  state.config.allow_all_ids = uniqueSorted(allowIds);
+  state.config.high_priority_ids = uniqueSorted(allowIds.slice(0, Math.min(highCount, allowIds.length)));
   state.candidateIds = new Set();
   refreshUi();
 
   const label = metric === "traffic" ? "COUNT" : "RATE";
-  setStatus(`Auto assign by ${label}: allow ${state.config.allow_all_ids.length}, high ${state.config.high_priority_ids.length}`);
+  setStatus(`Auto assign by ${label}: allow ${state.config.allow_all_ids.length}/${DEVICE_MAX_CONFIG_IDS}, high ${state.config.high_priority_ids.length}`);
+}
+
+function buildStrictFromTrace() {
+  const traceIds = uniqueSorted([...state.lastTraceStats.keys()]);
+  if (!traceIds.length) {
+    window.alert("Import trace first.");
+    return;
+  }
+
+  const allowCount = Math.max(
+    1,
+    Math.min(
+      DEVICE_MAX_CONFIG_IDS,
+      Number.parseInt(elements.autoAllowCount.value, 10) || DEVICE_MAX_CONFIG_IDS,
+    ),
+  );
+  const highCount = Math.max(0, Number.parseInt(elements.autoHighCount.value, 10) || 0);
+  const rankedTraceIds = [...traceIds].sort((a, b) => {
+    const ac = state.lastTraceStats.get(a)?.count || 0;
+    const bc = state.lastTraceStats.get(b)?.count || 0;
+    return bc - ac || a - b;
+  });
+  const allowIds = rankedTraceIds.slice(0, Math.min(allowCount, rankedTraceIds.length));
+
+  state.config.allow_all_ids = uniqueSorted(allowIds);
+  state.config.high_priority_ids = uniqueSorted(
+    allowIds.slice(0, Math.min(highCount, allowIds.length)),
+  );
+  state.candidateIds = new Set();
+
+  refreshUi();
+  setStatus(`Trace -> Strict: allow ${state.config.allow_all_ids.length}/${DEVICE_MAX_CONFIG_IDS}, high ${state.config.high_priority_ids.length}`);
+}
+
+function validateConfigCounts(target) {
+  if (state.config.allow_all_ids.length === 0 && state.candidateIds.size > 0) {
+    throw new Error("Imported IDs are still in Candidates. Run Auto By Count / Auto By Rate, or move them to Allow first.");
+  }
+  if (state.config.allow_all_ids.length > DEVICE_MAX_CONFIG_IDS) {
+    throw new Error(`ALLOW is ${state.config.allow_all_ids.length}. ${target} limit is ${DEVICE_MAX_CONFIG_IDS}.`);
+  }
+  if (state.config.high_priority_ids.length > DEVICE_MAX_CONFIG_IDS) {
+    throw new Error(`HIGH is ${state.config.high_priority_ids.length}. ${target} limit is ${DEVICE_MAX_CONFIG_IDS}.`);
+  }
 }
 
 async function sendBleCommand(command) {
   if (!bleState.connected || !bleState.rxChar) throw new Error("BLE is not connected");
-  await bleState.rxChar.writeValue(new TextEncoder().encode(command));
+  await bleState.rxChar.writeValue(textEncoder.encode(command));
 }
 
-async function sendSerialCommand(command) {
+async function sendSerialCommand(command, options = {}) {
   if (!serialState.connected || !serialState.writer) throw new Error("USB is not connected");
-  await serialState.writer.write(`${command}\n`);
+  const payload = textEncoder.encode(`${command}\n`);
+  const paced = Boolean(options.paced);
+  if (!paced || payload.length <= SERIAL_TX_CHUNK_BYTES) {
+    await serialState.writer.write(payload);
+    return;
+  }
+
+  for (let offset = 0; offset < payload.length; offset += SERIAL_TX_CHUNK_BYTES) {
+    const chunk = payload.slice(offset, Math.min(offset + SERIAL_TX_CHUNK_BYTES, payload.length));
+    await serialState.writer.write(chunk);
+    await delay(SERIAL_TX_CHUNK_DELAY_MS);
+  }
 }
 
 function shouldIgnoreDeviceMessage(message) {
@@ -556,6 +724,8 @@ function handleBleDisconnect() {
 async function handleUsbDisconnect() {
   serialState.connected = false;
   serialState.role = "";
+  ignoreIncomingConfigSnapshot = false;
+  clearPendingDeviceResponses();
   setUsbUiState();
   await closeSerialPort();
   setStatus("USB disconnected");
@@ -563,6 +733,23 @@ async function handleUsbDisconnect() {
 
 function applyDeviceMessage(message) {
   if (!message || shouldIgnoreDeviceMessage(message)) return;
+  notifyDeviceResponse(message);
+
+  if (ignoreIncomingConfigSnapshot) {
+    if (
+      message.startsWith("ROLE=") ||
+      message.startsWith("FILTER=") ||
+      message.startsWith("ALLOW=") ||
+      message.startsWith("HIGH=")
+    ) {
+      return;
+    }
+    if (message === "CFG_DONE") {
+      ignoreIncomingConfigSnapshot = false;
+      setStatus("Write complete. Use USB Read / BLE Read to verify.");
+      return;
+    }
+  }
 
   if (message.startsWith("ROLE=")) {
     const role = message.substring(5);
@@ -586,6 +773,19 @@ function applyDeviceMessage(message) {
     state.config.high_priority_ids = parseIdArrayText(message.substring(5));
     for (const id of state.config.high_priority_ids) state.candidateIds.add(id);
     refreshUi();
+    return;
+  }
+  if (message.startsWith("OBS_BEGIN=") || message === "OBS_CLEAR") {
+    return;
+  }
+  if (message.startsWith("OBS=")) {
+    if (pendingObservedStats) {
+      const { canId, stat } = parseObservedStatMessage(message);
+      pendingObservedStats.set(canId, stat);
+    }
+    return;
+  }
+  if (message.startsWith("OBS_DONE=")) {
     return;
   }
   if (message === "CFG_DONE") {
@@ -632,27 +832,39 @@ async function connectUsbSerial() {
     return;
   }
 
+  setStatus("USB: selecting port");
   const port = await navigator.serial.requestPort();
+
+  setStatus("USB: opening port");
   await port.open({ baudRate: 115200 });
 
+  if (!port.readable) {
+    throw new Error("USB open ok, but port.readable is missing");
+  }
+  if (!port.writable) {
+    throw new Error("USB open ok, but port.writable is missing");
+  }
+
   serialState.port = port;
+  setStatus("USB: creating reader");
   serialState.reader = port.readable.getReader();
+  setStatus("USB: creating writer");
   serialState.writer = port.writable.getWriter();
   serialState.connected = true;
-  serialState.readableClosed =
-    port.readable && "closed" in port.readable && port.readable.closed
-      ? port.readable.closed.catch(() => {})
-      : null;
-  serialState.writableClosed =
-    port.writable && "closed" in port.writable && port.writable.closed
-      ? port.writable.closed.catch(() => {})
-      : null;
+  serialState.readableClosed = null;
+  serialState.writableClosed = null;
   setUsbUiState();
   setStatus("USB connected");
 
-  pumpSerialReader().catch(async () => {
-    if (serialState.connected) await handleUsbDisconnect();
-  });
+  (async () => {
+    try {
+      await pumpSerialReader();
+    } catch {
+      if (serialState.connected) {
+        await handleUsbDisconnect();
+      }
+    }
+  })();
 
   await delay(80);
   await sendSerialCommand("PING");
@@ -702,14 +914,30 @@ async function readConfigFromBle() {
 }
 
 async function writeConfigToBle() {
-  const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
-  const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
-  await sendBleCommand(`SET_FILTER=${state.config.filter_mode}`);
-  await sendBleCommand(`SET_ALLOW=${allowLine}`);
-  await sendBleCommand(`SET_HIGH=${highLine}`);
-  await sendBleCommand("SAVE_CFG");
-  await sendBleCommand("REQUEST_CFG");
-  setStatus("Writing config to M5 over BLE");
+  validateConfigCounts("M5");
+  ignoreIncomingConfigSnapshot = true;
+  clearPendingDeviceResponses();
+  try {
+    const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
+    const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
+    const filterAck = waitForDeviceResponse("SET_FILTER", (msg) => msg.startsWith("FILTER_OK=") || msg.startsWith("ERR="), 4000);
+    await sendBleCommand(`SET_FILTER=${state.config.filter_mode}`);
+    throwIfDeviceError("SET_FILTER", await filterAck);
+    const allowAck = waitForDeviceResponse("SET_ALLOW", (msg) => msg.startsWith("ALLOW_OK=") || msg.startsWith("ERR="), 10000);
+    await sendBleCommand(`SET_ALLOW=${allowLine}`);
+    throwIfDeviceError("SET_ALLOW", await allowAck);
+    const highAck = waitForDeviceResponse("SET_HIGH", (msg) => msg.startsWith("HIGH_OK=") || msg.startsWith("ERR="), 6000);
+    await sendBleCommand(`SET_HIGH=${highLine}`);
+    throwIfDeviceError("SET_HIGH", await highAck);
+    const saveAck = waitForDeviceResponse("SAVE_CFG", (msg) => msg === "CFG_SAVED" || msg.startsWith("ERR="), 10000);
+    await sendBleCommand("SAVE_CFG");
+    throwIfDeviceError("SAVE_CFG", await saveAck);
+    setStatus("Config saved to M5 over BLE. Use BLE Read to verify.");
+  } catch (error) {
+    ignoreIncomingConfigSnapshot = false;
+    clearPendingDeviceResponses();
+    throw error;
+  }
 }
 
 async function readConfigFromUsb() {
@@ -718,18 +946,68 @@ async function readConfigFromUsb() {
 }
 
 async function writeConfigToUsb() {
-  const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
-  const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
-  await sendSerialCommand(`SET_FILTER=${state.config.filter_mode}`);
-  await delay(40);
-  await sendSerialCommand(`SET_ALLOW=${allowLine}`);
-  await delay(40);
-  await sendSerialCommand(`SET_HIGH=${highLine}`);
-  await delay(40);
-  await sendSerialCommand("SAVE_CFG");
-  await delay(120);
-  await sendSerialCommand("REQUEST_CFG");
-  setStatus("Writing config to M5 over USB");
+  validateConfigCounts("M5");
+  ignoreIncomingConfigSnapshot = true;
+  clearPendingDeviceResponses();
+  try {
+    const allowLine = state.config.allow_all_ids.map(formatCanId).join(",");
+    const highLine = state.config.high_priority_ids.map(formatCanId).join(",");
+    setStatus("USB write: SET_FILTER");
+    const filterAck = waitForDeviceResponse("SET_FILTER", (msg) => msg.startsWith("FILTER_OK=") || msg.startsWith("ERR="), 4000);
+    await sendSerialCommand(`SET_FILTER=${state.config.filter_mode}`);
+    throwIfDeviceError("SET_FILTER", await filterAck);
+    setStatus("USB write: SET_ALLOW");
+    const allowAck = waitForDeviceResponse("SET_ALLOW", (msg) => msg.startsWith("ALLOW_OK=") || msg.startsWith("ERR="), 10000);
+    await sendSerialCommand(`SET_ALLOW=${allowLine}`, { paced: true });
+    throwIfDeviceError("SET_ALLOW", await allowAck);
+    setStatus("USB write: SET_HIGH");
+    const highAck = waitForDeviceResponse("SET_HIGH", (msg) => msg.startsWith("HIGH_OK=") || msg.startsWith("ERR="), 6000);
+    await sendSerialCommand(`SET_HIGH=${highLine}`, { paced: true });
+    throwIfDeviceError("SET_HIGH", await highAck);
+    setStatus("USB write: SAVE_CFG");
+    const saveAck = waitForDeviceResponse("SAVE_CFG", (msg) => msg === "CFG_SAVED" || msg.startsWith("ERR="), 10000);
+    await sendSerialCommand("SAVE_CFG");
+    throwIfDeviceError("SAVE_CFG", await saveAck);
+    setStatus("Config saved to M5 over USB. Use USB Read to verify.");
+  } catch (error) {
+    ignoreIncomingConfigSnapshot = false;
+    clearPendingDeviceResponses();
+    throw error;
+  }
+}
+
+async function clearObservedLiveUsb() {
+  const ack = waitForDeviceResponse("OBS_CLEAR", (msg) => msg === "OBS_CLEAR" || msg.startsWith("ERR="), 3000);
+  await sendSerialCommand("OBS_CLEAR");
+  throwIfDeviceError("OBS_CLEAR", await ack);
+  pendingObservedStats = null;
+  setStatus("Live capture cleared. Run with FILTER=ALL, then USB Import Live.");
+}
+
+async function importObservedLiveUsb() {
+  pendingObservedStats = new Map();
+  const ack = waitForDeviceResponse("OBS_DUMP", (msg) => msg.startsWith("OBS_DONE=") || msg.startsWith("ERR="), 15000);
+  await sendSerialCommand("OBS_DUMP");
+  const response = await ack;
+  throwIfDeviceError("OBS_DUMP", response);
+
+  const observed = pendingObservedStats || new Map();
+  pendingObservedStats = null;
+  if (observed.size === 0) {
+    throw new Error("No live IDs captured. Use FILTER=ALL, let traffic flow, then try again.");
+  }
+
+  state.lastTraceStats = new Map();
+  for (const [canId, stat] of observed.entries()) {
+    state.candidateIds.add(canId);
+    state.lastTraceStats.set(canId, { ...stat });
+    const current = state.idStats.get(canId) || emptyStat();
+    mergeStat(current, stat);
+    state.idStats.set(canId, current);
+  }
+
+  refreshUi();
+  setStatus(`Imported ${observed.size} live IDs from M5. Next: Auto By Count / Trace -> Strict.`);
 }
 
 function bindEvents() {
@@ -760,13 +1038,14 @@ function bindEvents() {
 
   elements.autoAssignTrafficButton.addEventListener("click", () => autoAssignByMetric("traffic"));
   elements.autoAssignRateButton.addEventListener("click", () => autoAssignByMetric("rate"));
+  elements.buildStrictFromTraceButton.addEventListener("click", buildStrictFromTrace);
 
   elements.usbConnectButton.addEventListener("click", async () => {
     try {
       await connectUsbSerial();
     } catch (error) {
       setStatus(`USB error: ${error.message}`);
-      window.alert(`USB connect failed: ${error.message}`);
+      window.alert(`USB connect failed: ${error && (error.stack || error.message || String(error))}`);
     }
   });
   elements.usbReadButton.addEventListener("click", async () => {
@@ -779,10 +1058,27 @@ function bindEvents() {
   });
   elements.usbWriteButton.addEventListener("click", async () => {
     try {
+      setStatus("USB write clicked");
       await writeConfigToUsb();
     } catch (error) {
       setStatus(`USB write error: ${error.message}`);
       window.alert(`USB write failed: ${error.message}`);
+    }
+  });
+  elements.usbClearLiveButton.addEventListener("click", async () => {
+    try {
+      await clearObservedLiveUsb();
+    } catch (error) {
+      setStatus(`USB live clear error: ${error.message}`);
+      window.alert(`USB live clear failed: ${error.message}`);
+    }
+  });
+  elements.usbImportLiveButton.addEventListener("click", async () => {
+    try {
+      await importObservedLiveUsb();
+    } catch (error) {
+      setStatus(`USB live import error: ${error.message}`);
+      window.alert(`USB live import failed: ${error.message}`);
     }
   });
 
@@ -856,4 +1152,4 @@ bindEvents();
 refreshUi();
 setBleUiState();
 setUsbUiState();
-setStatus("READY");
+setStatus("READY v20260329f");

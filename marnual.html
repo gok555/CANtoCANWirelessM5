@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CAN Bridge Config Web Manual</title>
+  <style>
+    :root {
+      --bg1: #f4f1eb;
+      --bg2: #e9e0d2;
+      --panel: #fffdfa;
+      --line: #d6ccbc;
+      --text: #2b241c;
+      --muted: #6f6255;
+      --accent: #005f73;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 20px 16px 48px;
+    }
+    .panel {
+      background: rgba(255, 253, 250, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px 18px;
+      margin-top: 14px;
+    }
+    h1, h2 { margin: 0 0 10px; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 22px; }
+    p, li { line-height: 1.6; }
+    .muted { color: var(--muted); }
+    code {
+      background: #f4eadb;
+      border: 1px solid #e0d2bc;
+      border-radius: 8px;
+      padding: 2px 6px;
+      font-family: Consolas, monospace;
+    }
+    a { color: var(--accent); }
+    ul, ol { padding-left: 22px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <h1>CAN Bridge Config Web Manual</h1>
+      <p class="muted">Guide for the M5 AtomS3R A/B CAN wireless bridge web tool.</p>
+      <p><a href="./index.html">Open the app</a></p>
+    </section>
+
+    <section class="panel">
+      <h2>1. What this tool does</h2>
+      <ul>
+        <li>Load and save config JSON files</li>
+        <li>Import CAN IDs from trace files</li>
+        <li>Import live CAN IDs from unit A over USB</li>
+        <li>Edit `Allow` and `High` lists</li>
+        <li>Build strict configs from observed traffic</li>
+        <li>Write settings to unit A over USB</li>
+        <li>Sync settings from A to B</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>2. Main workflow</h2>
+      <ol>
+        <li>Open the web app.</li>
+        <li>Choose an input source:
+          <ul>
+            <li><code>Load JSON</code> for an existing config</li>
+            <li><code>Import Trace</code> for a saved trace file</li>
+            <li><code>USB Connect</code> then <code>USB Import Live</code> for live traffic from unit A</li>
+          </ul>
+        </li>
+        <li>Build the config:
+          <ul>
+            <li><code>Trace -&gt; Strict</code> for exact IDs from the latest imported data</li>
+            <li><code>Auto By Count</code> for frame-count-based ranking</li>
+            <li><code>Auto By Rate</code> for update-rate-based ranking</li>
+          </ul>
+        </li>
+        <li>Review `Allow` and `High`.</li>
+        <li>Use <code>USB Write</code> to write to unit A.</li>
+        <li>Let unit A sync the setting to unit B.</li>
+      </ol>
+    </section>
+
+    <section class="panel">
+      <h2>3. Recommended operating method</h2>
+      <ol>
+        <li>Run the bridge in <code>FILTER=ALL</code>.</li>
+        <li>Capture real traffic from the actual CAN line.</li>
+        <li>Import the data into the web app.</li>
+        <li>Use <code>Trace -&gt; Strict</code> to build the base `Allow` list.</li>
+        <li>Adjust `High` only after the exact traffic set is correct.</li>
+      </ol>
+      <p>This is the safest method when reliability matters more than speed.</p>
+    </section>
+
+    <section class="panel">
+      <h2>4. Live import</h2>
+      <ol>
+        <li>Connect unit A by USB.</li>
+        <li>Click <code>USB Connect</code>.</li>
+        <li>Click <code>USB Clear Live</code>.</li>
+        <li>Let real CAN traffic flow for a few seconds.</li>
+        <li>Click <code>USB Import Live</code>.</li>
+      </ol>
+      <p>If the app shows <code>No live IDs captured</code>, unit A did not observe any CAN frames during that capture window.</p>
+      <p>For reliable live import, connect unit A directly to the same CAN point you want to observe.</p>
+    </section>
+
+    <section class="panel">
+      <h2>5. Save and write behavior</h2>
+      <ul>
+        <li><code>Save JSON</code> saves the current `Allow` and `High` lists.</li>
+        <li>The left `Candidates` list is not the saved output.</li>
+        <li>After importing trace or live data, build the actual config before saving.</li>
+        <li><code>USB Write</code> sends the current config to unit A.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>6. ECU Master ADU note</h2>
+      <p>Runtime CAN bridging and ADU Client PC communication are not the same use case.</p>
+      <ul>
+        <li>For setup, firmware update, or ADU Client communication, use direct wired connection.</li>
+        <li>Use the wireless bridge mainly for runtime display and selected CAN transfer.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>7. Current limits</h2>
+      <ul>
+        <li>The M5 config limit is 128 IDs per list.</li>
+        <li>Wireless security settings are not finished yet.</li>
+        <li>Future items:
+          <ul>
+            <li>channel</li>
+            <li>network ID</li>
+            <li>shared key</li>
+            <li>safe staged A/B wireless switch</li>
+          </ul>
+        </li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

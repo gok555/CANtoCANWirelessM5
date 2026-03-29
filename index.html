@@ -97,7 +97,7 @@
 <body>
   <main class="app">
     <header class="header">
-      <h1>CAN Bridge Config Web</h1>
+      <h1>CAN Bridge Config Web v20260329f</h1>
       <p>Import log, sort IDs, read/write M5, and generate header.</p>
     </header>
 
@@ -110,9 +110,12 @@
         <button id="generateHeaderButton">Make Header</button>
         <button id="autoAssignTrafficButton">Auto By Count</button>
         <button id="autoAssignRateButton">Auto By Rate</button>
+        <button id="buildStrictFromTraceButton">Trace -> Strict</button>
         <button id="usbConnectButton">USB Connect</button>
         <button id="usbReadButton" disabled>USB Read</button>
         <button id="usbWriteButton" disabled>USB Write</button>
+        <button id="usbClearLiveButton" disabled>USB Clear Live</button>
+        <button id="usbImportLiveButton" disabled>USB Import Live</button>
         <button id="bleConnectButton">BLE Connect</button>
         <button id="bleReadButton" disabled>BLE Read</button>
         <button id="bleWriteButton" disabled>BLE Write</button>
@@ -146,11 +149,19 @@
             <option value="30">30</option>
           </select>
         </label>
+        <label>ALLOW N
+          <select id="autoAllowCount">
+            <option value="32">32</option>
+            <option value="64">64</option>
+            <option value="96">96</option>
+            <option value="128" selected>128</option>
+          </select>
+        </label>
       </div>
     </section>
 
     <section class="note">
-      Left: candidates. Center: allow list. Right: high priority. Import trace, then auto-assign by count or rate.
+      Left: candidates. Center: allow list. Right: high priority. M5 limit is 128 IDs per list.
     </section>
 
     <section class="columns">
@@ -205,12 +216,12 @@
       <textarea id="headerPreview" spellcheck="false"></textarea>
     </details>
 
-    <footer class="status" id="statusBar">READY</footer>
+    <footer class="status" id="statusBar">READY v20260329f</footer>
 
     <input id="jsonFileInput" type="file" accept=".json,application/json" hidden>
     <input id="traceFileInput" type="file" accept=".trace,.log,.txt,.csv" multiple hidden>
   </main>
 
-  <script src="app.js?v=20260328d"></script>
+  <script src="app.js?v=20260329f"></script>
 </body>
 </html>

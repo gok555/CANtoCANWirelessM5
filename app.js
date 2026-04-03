@@ -44,6 +44,14 @@ const elements = {
   headerPreview: document.getElementById("headerPreview"),
   jsonFileInput: document.getElementById("jsonFileInput"),
   traceFileInput: document.getElementById("traceFileInput"),
+  pmkPasswordInput: document.getElementById("pmkPasswordInput"),
+  pmkDerivedKeyDisplay: document.getElementById("pmkDerivedKeyDisplay"),
+  pmkSetButton: document.getElementById("pmkSetButton"),
+  pmkApplyButton: document.getElementById("pmkApplyButton"),
+  pmkCancelButton: document.getElementById("pmkCancelButton"),
+  pmkGetStateButton: document.getElementById("pmkGetStateButton"),
+  pmkClearButton: document.getElementById("pmkClearButton"),
+  pmkStatusDisplay: document.getElementById("pmkStatusDisplay"),
 };
 
 const bleState = {
@@ -68,6 +76,12 @@ const serialState = {
 
 let ignoreIncomingConfigSnapshot = false;
 const pendingDeviceResponses = [];
+
+const pmkUiState = {
+  stage: "idle",    // idle / awaiting_ack / ready / applying / switching / verify
+  activeKey: null,  // 現在有効なキー (hex文字列 or "NONE" or null=不明)
+  pendingKey: null, // ステージング中のキー
+};
 let pendingObservedStats = null;
 
 const BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -142,6 +156,102 @@ function setUsbUiState() {
   elements.usbWriteButton.disabled = !connected;
   elements.usbClearLiveButton.disabled = !connected;
   elements.usbImportLiveButton.disabled = !connected;
+  setPmkUiState();
+}
+
+async function passwordToHex(password) {
+  if (!password) return "";
+  const encoded = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const bytes = new Uint8Array(hashBuffer).slice(0, 16);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function setPmkUiState() {
+  const connected = serialState.connected;
+  const { stage, activeKey, pendingKey } = pmkUiState;
+  const busy = stage === "switching" || stage === "verify" || stage === "applying";
+  elements.pmkSetButton.disabled = !connected || busy;
+  elements.pmkApplyButton.disabled = !connected || stage !== "ready";
+  elements.pmkCancelButton.disabled = !connected || stage === "idle" || busy;
+  elements.pmkGetStateButton.disabled = !connected;
+  elements.pmkClearButton.disabled = !connected || stage !== "idle";
+
+  const stageLabel = {
+    idle: "IDLE",
+    awaiting_ack: "STAGING... (B承認待ち)",
+    ready: "STAGED ✓ 切替実行可能",
+    applying: "切替コマンド送信済み",
+    switching: "切替中...",
+    verify: "検証中 (PING応答待ち)...",
+  }[stage] || stage;
+
+  let text = `状態: ${stageLabel}`;
+  if (pendingKey) text += ` | 待機: ${pendingKey.slice(0, 8)}...`;
+  if (activeKey && activeKey !== "NONE") text += ` | 有効: ${activeKey.slice(0, 8)}...`;
+  else if (activeKey === "NONE") text += " | 暗号化: なし";
+  if (!connected) text = "状態: IDLE (USB接続後に使用可)";
+  elements.pmkStatusDisplay.textContent = text;
+}
+
+async function cmdSetPmkPending(hexKey) {
+  const ack = waitForDeviceResponse(
+    "SET_PMK_PENDING",
+    (msg) => msg.startsWith("PMK_STAGING=") || msg === "PMK_STAGE_OK" || msg.startsWith("ERR="),
+    8000,
+  );
+  await sendSerialCommand(`SET_PMK_PENDING=${hexKey}`);
+  const response = await ack;
+  throwIfDeviceError("SET_PMK_PENDING", response);
+  return response;
+}
+
+async function cmdApplyPmk() {
+  const ack = waitForDeviceResponse(
+    "APPLY_PMK",
+    (msg) => msg.startsWith("PMK_APPLY_SENT=") || msg.startsWith("ERR="),
+    5000,
+  );
+  await sendSerialCommand("APPLY_PMK");
+  const response = await ack;
+  throwIfDeviceError("APPLY_PMK", response);
+  return response;
+}
+
+async function cmdCancelPmk() {
+  const ack = waitForDeviceResponse(
+    "CANCEL_PMK",
+    (msg) => msg === "PMK_CANCELLED" || msg.startsWith("ERR="),
+    3000,
+  );
+  await sendSerialCommand("CANCEL_PMK");
+  const response = await ack;
+  throwIfDeviceError("CANCEL_PMK", response);
+  return response;
+}
+
+async function cmdGetPmkState() {
+  const ack = waitForDeviceResponse(
+    "GET_PMK_STATE",
+    (msg) => msg.startsWith("PMK_STATE=") || msg.startsWith("ERR="),
+    3000,
+  );
+  await sendSerialCommand("GET_PMK_STATE");
+  const response = await ack;
+  throwIfDeviceError("GET_PMK_STATE", response);
+  return response;
+}
+
+async function cmdClearPmk() {
+  const ack = waitForDeviceResponse(
+    "CLEAR_PMK",
+    (msg) => msg.startsWith("PMK_CLEARED") || msg.startsWith("ERR="),
+    5000,
+  );
+  await sendSerialCommand("CLEAR_PMK");
+  const response = await ack;
+  throwIfDeviceError("CLEAR_PMK", response);
+  return response;
 }
 
 function parseCanId(raw) {
@@ -806,6 +916,47 @@ function applyDeviceMessage(message) {
     setStatus(`M5 error: ${message.substring(4)}`);
     return;
   }
+  if (message.startsWith("PMK_STAGING=")) {
+    pmkUiState.pendingKey = message.substring(12);
+    pmkUiState.stage = "awaiting_ack";
+    setPmkUiState();
+    setStatus("PMK: Bへステージング送信中...");
+    return;
+  }
+  if (message === "PMK_STAGE_OK") {
+    pmkUiState.stage = "ready";
+    setPmkUiState();
+    setStatus("PMK: BがOK。「2. 切替実行」を押してください。");
+    return;
+  }
+  if (message.startsWith("PMK_APPLY_SENT=")) {
+    pmkUiState.stage = "applying";
+    setPmkUiState();
+    setStatus(`PMK: 切替コマンド送信済み (${message.substring(15)}ms後に切替)`);
+    return;
+  }
+  if (message === "PMK_SWITCHING") {
+    pmkUiState.stage = "switching";
+    setPmkUiState();
+    setStatus("PMK: 切替中...");
+    return;
+  }
+  if (message.startsWith("PMK_ACTIVE=")) {
+    const key = message.substring(11);
+    pmkUiState.activeKey = key;
+    pmkUiState.pendingKey = null;
+    pmkUiState.stage = "idle";
+    setPmkUiState();
+    setStatus(`PMK: 切替完了 (${key === "NONE" ? "暗号化なし" : key.slice(0, 8) + "..."})`);
+    return;
+  }
+  if (message.startsWith("PMK_REVERT=")) {
+    pmkUiState.stage = "idle";
+    pmkUiState.pendingKey = null;
+    setPmkUiState();
+    setStatus(`PMK: 切替失敗・元に戻しました (${message.substring(11)})`);
+    return;
+  }
   if (message.startsWith("SYNC_") || message === "PONG") return;
 }
 
@@ -1146,10 +1297,93 @@ function bindEvents() {
     }
     event.target.value = "";
   });
+
+  // PMK パスワード入力 → SHA-256 変換して表示
+  elements.pmkPasswordInput.addEventListener("input", async () => {
+    const pw = elements.pmkPasswordInput.value;
+    elements.pmkDerivedKeyDisplay.value = pw ? await passwordToHex(pw) : "";
+  });
+
+  elements.pmkSetButton.addEventListener("click", async () => {
+    const hexKey = elements.pmkDerivedKeyDisplay.value.trim().toUpperCase();
+    if (hexKey.length !== 32) {
+      window.alert("パスワードを入力してください。");
+      return;
+    }
+    try {
+      setStatus("PMK: ステージング送信中...");
+      pmkUiState.pendingKey = hexKey;
+      await cmdSetPmkPending(hexKey);
+    } catch (error) {
+      pmkUiState.stage = "idle";
+      setPmkUiState();
+      setStatus(`PMK エラー: ${error.message}`);
+      window.alert(`PMK ステージング失敗:\n${error.message}`);
+    }
+  });
+
+  elements.pmkApplyButton.addEventListener("click", async () => {
+    if (!window.confirm("ESP-NOW パスワードを切替します。\n2秒後にA・B両ノードが同時に切替わります。\n\n続けますか？")) return;
+    try {
+      setStatus("PMK: 切替コマンド送信中...");
+      await cmdApplyPmk();
+    } catch (error) {
+      pmkUiState.stage = "idle";
+      setPmkUiState();
+      setStatus(`PMK エラー: ${error.message}`);
+      window.alert(`PMK 切替失敗:\n${error.message}`);
+    }
+  });
+
+  elements.pmkCancelButton.addEventListener("click", async () => {
+    try {
+      await cmdCancelPmk();
+      pmkUiState.stage = "idle";
+      pmkUiState.pendingKey = null;
+      setPmkUiState();
+      setStatus("PMK: キャンセル済");
+    } catch (error) {
+      setStatus(`PMK エラー: ${error.message}`);
+    }
+  });
+
+  elements.pmkGetStateButton.addEventListener("click", async () => {
+    try {
+      const response = await cmdGetPmkState();
+      // PMK_STATE=IDLE,active=NONE などをパース
+      const m = response.match(/PMK_STATE=(\w+),active=(\S+)/);
+      if (m) {
+        pmkUiState.stage = m[1].toLowerCase();
+        pmkUiState.activeKey = m[2];
+      }
+      setPmkUiState();
+      setStatus(`PMK 状態: ${response}`);
+    } catch (error) {
+      setStatus(`PMK エラー: ${error.message}`);
+    }
+  });
+
+  elements.pmkClearButton.addEventListener("click", async () => {
+    if (!window.confirm("ESP-NOW 暗号化を無効化します（パスワード削除）。\n続けますか？")) return;
+    try {
+      await cmdClearPmk();
+      pmkUiState.activeKey = "NONE";
+      pmkUiState.pendingKey = null;
+      pmkUiState.stage = "idle";
+      elements.pmkPasswordInput.value = "";
+      elements.pmkDerivedKeyDisplay.value = "";
+      setPmkUiState();
+      setStatus("PMK: パスワード削除済 (暗号化なし)");
+    } catch (error) {
+      setStatus(`PMK エラー: ${error.message}`);
+      window.alert(`PMK 削除失敗:\n${error.message}`);
+    }
+  });
 }
 
 bindEvents();
 refreshUi();
 setBleUiState();
 setUsbUiState();
+setPmkUiState();
 setStatus("READY v20260329f");

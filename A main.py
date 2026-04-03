@@ -65,6 +65,15 @@ constexpr uint16_t ROLE_HEADER_COLOR = TFT_CYAN;
 constexpr uint16_t ROLE_TEXT_COLOR = TFT_BLACK;
 constexpr char ROLE_LABEL[] = "A";
 
+// PMK synchronization constants
+constexpr uint8_t CONFIG_TYPE_PMK_STAGE  = 5;
+constexpr uint8_t CONFIG_TYPE_PMK_APPLY  = 6;
+constexpr uint8_t CONFIG_TYPE_PMK_PING   = 7;
+constexpr uint8_t CONFIG_TYPE_PMK_PONG   = 8;
+constexpr uint32_t PMK_APPLY_DELAY_MS    = 2000;
+constexpr uint32_t PMK_VERIFY_TIMEOUT_MS = 5000;
+constexpr uint32_t PMK_PING_INTERVAL_MS  = 500;
+
 struct BridgeFrame {
   uint32_t id;
   uint8_t dlc;
@@ -112,6 +121,15 @@ struct ConfigAckPacket {
   uint8_t filter_mode;
   uint16_t allow_count;
   uint16_t high_count;
+} __attribute__((packed));
+
+struct PmkPacket {
+  uint16_t magic;
+  uint8_t  version;
+  uint8_t  source;
+  uint8_t  type;       // CONFIG_TYPE_PMK_STAGE / APPLY / PING / PONG
+  uint8_t  pmk[16];   // new PMK (zeros = remove encryption)
+  uint32_t delay_ms;  // APPLY時: 切替までの遅延ms
 } __attribute__((packed));
 
 struct FrameRing {
@@ -263,6 +281,22 @@ size_t bleNotifyHead = 0;
 size_t bleNotifyTail = 0;
 portMUX_TYPE bleQueueMux = portMUX_INITIALIZER_UNLOCKED;
 
+// PMK state machine
+enum PmkState : uint8_t {
+  PMK_STATE_IDLE = 0,
+  PMK_STATE_AWAITING_ACK,  // B へ PMK_STAGE 送信済、ACK待ち
+  PMK_STATE_READY,         // B が承認済、APPLY_PMK コマンド待ち
+  PMK_STATE_SWITCHING,     // タイマー動作中、切替待ち
+  PMK_STATE_VERIFY,        // 新PMKで再初期化済、PING確認中
+};
+volatile PmkState pmkState = PMK_STATE_IDLE;
+uint8_t activePmk[16]       = {};  // 現在有効なPMK (zeros=暗号化なし)
+uint8_t activePmkBackup[16] = {};  // revert用バックアップ
+uint8_t pendingPmk[16]      = {};  // ステージング中のPMK
+uint32_t pmkApplyAtMs        = 0;
+uint32_t pmkVerifyStartMs    = 0;
+uint32_t pmkVerifyLastPingMs = 0;
+
 String macToString(const uint8_t* mac) {
   char buf[18];
   snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -318,6 +352,22 @@ void updateUiStatusFromMessage(const String& message) {
   }
   if (message.startsWith("ALLOW_OK=") || message.startsWith("HIGH_OK=") || message.startsWith("FILTER_OK=")) {
     setUiStatus("EDIT OK", TFT_GREEN, TFT_BLACK, 1800);
+    return;
+  }
+  if (message.startsWith("PMK_ACTIVE")) {
+    setUiStatus("PMK OK", TFT_GREEN, TFT_BLACK, 4000);
+    return;
+  }
+  if (message == "PMK_SWITCHING") {
+    setUiStatus("PMK APPLY", TFT_YELLOW, TFT_BLACK, 3000);
+    return;
+  }
+  if (message.startsWith("PMK_REVERT")) {
+    setUiStatus("PMK FAIL", TFT_RED, TFT_WHITE, 5000);
+    return;
+  }
+  if (message == "PMK_STAGE_OK") {
+    setUiStatus("PMK STAGE", TFT_CYAN, TFT_BLACK, 2500);
     return;
   }
   if (message.startsWith("ERR=") || message.startsWith("SYNC_ERR=")) {
@@ -528,6 +578,62 @@ String buildIdList(const uint32_t* ids, size_t count) {
     text += buf;
   }
   return text;
+}
+
+bool isZeroPmk(const uint8_t* pmk) {
+  for (int i = 0; i < 16; ++i) {
+    if (pmk[i] != 0) return false;
+  }
+  return true;
+}
+
+bool parsePmkHex(const String& hexStr, uint8_t* out) {
+  String s = hexStr;
+  s.trim();
+  if (s.length() != 32) return false;
+  for (int i = 0; i < 16; ++i) {
+    const char hi = s[i * 2];
+    const char lo = s[i * 2 + 1];
+    auto hexVal = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+      return -1;
+    };
+    const int h = hexVal(hi), l = hexVal(lo);
+    if (h < 0 || l < 0) return false;
+    out[i] = static_cast<uint8_t>((h << 4) | l);
+  }
+  return true;
+}
+
+String pmkToHex(const uint8_t* pmk) {
+  char buf[33];
+  for (int i = 0; i < 16; ++i) {
+    snprintf(buf + i * 2, 3, "%02X", pmk[i]);
+  }
+  return String(buf);
+}
+
+void loadPmkFromPrefs() {
+  configPrefs.begin(CONFIG_PREFS_NAMESPACE, true);
+  const size_t len = configPrefs.getBytesLength("pmk_active");
+  if (len == 16) {
+    configPrefs.getBytes("pmk_active", activePmk, 16);
+  } else {
+    memset(activePmk, 0, 16);
+  }
+  configPrefs.end();
+}
+
+void savePmkToPrefs(const uint8_t* pmk) {
+  configPrefs.begin(CONFIG_PREFS_NAMESPACE, false);
+  if (isZeroPmk(pmk)) {
+    configPrefs.remove("pmk_active");
+  } else {
+    configPrefs.putBytes("pmk_active", pmk, 16);
+  }
+  configPrefs.end();
 }
 
 bool loadRuntimeConfigFromPrefs() {
@@ -751,6 +857,20 @@ bool sendConfigChunks(uint8_t type, const uint32_t* ids, size_t count) {
   return true;
 }
 
+void sendPmkPacket(uint8_t type, const uint8_t* pmk, uint32_t delayMs) {
+  if (!hasPeer) return;
+  PmkPacket pkt = {};
+  pkt.magic    = CONFIG_MAGIC;
+  pkt.version  = BRIDGE_VERSION;
+  pkt.source   = NODE_ID;
+  pkt.type     = type;
+  pkt.delay_ms = delayMs;
+  if (pmk != nullptr) {
+    memcpy(pkt.pmk, pmk, 16);
+  }
+  esp_now_send(peerMac, reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
+}
+
 bool syncRuntimeConfigToPeer() {
   if (!hasPeer || bleConfigOnlyMode) {
     pushConfigResponse("SYNC_SKIP=NO_PEER");
@@ -793,14 +913,15 @@ bool syncRuntimeConfigToPeer() {
 class ConfigServerCallbacks : public BLEServerCallbacks {
  public:
   void onConnect(BLEServer* server, NimBLEConnInfo& connInfo) override {
+    (void)server;
+    (void)connInfo;
     bleClientConnected = true;
     Serial.println("[BLE] client connected");
-    if (server != nullptr) {
-      server->updateConnParams(connInfo.getConnHandle(), 24, 48, 0, 180);
-    }
+    // updateConnParams は GATT discovery 完了前に呼ぶと切断される為削除
   }
 
   void onDisconnect(BLEServer* server, NimBLEConnInfo&, int) override {
+    (void)server;
     bleClientConnected = false;
     Serial.println("[BLE] client disconnected");
     NimBLEDevice::startAdvertising();
@@ -821,6 +942,39 @@ class ConfigRxCallbacks : public BLECharacteristicCallbacks {
     }
   }
 };
+
+void reinitEspNow(const uint8_t* pmk);  // forward declaration
+
+void processPmkStateMachine() {
+  const uint32_t now = millis();
+
+  if (pmkState == PMK_STATE_SWITCHING && now >= pmkApplyAtMs) {
+    // バックアップを保持したまま新PMKを適用
+    memcpy(activePmk, pendingPmk, 16);
+    memset(pendingPmk, 0, 16);
+    reinitEspNow(activePmk);
+    pmkState = PMK_STATE_VERIFY;
+    pmkVerifyStartMs = now;
+    pmkVerifyLastPingMs = 0;
+    pushConfigResponse("PMK_SWITCHING");
+    return;
+  }
+
+  if (pmkState == PMK_STATE_VERIFY) {
+    if (now - pmkVerifyStartMs >= PMK_VERIFY_TIMEOUT_MS) {
+      // タイムアウト: 旧PMKに戻す
+      memcpy(activePmk, activePmkBackup, 16);
+      reinitEspNow(activePmk);
+      pmkState = PMK_STATE_IDLE;
+      pushConfigResponse("PMK_REVERT=TIMEOUT");
+      return;
+    }
+    if (now - pmkVerifyLastPingMs >= PMK_PING_INTERVAL_MS) {
+      sendPmkPacket(CONFIG_TYPE_PMK_PING, nullptr, 0);
+      pmkVerifyLastPingMs = now;
+    }
+  }
+}
 
 void processSerialCommands() {
   while (Serial.available() > 0) {
@@ -939,6 +1093,20 @@ void ensurePeer(const uint8_t* mac) {
   memcpy(peerInfo.peer_addr, mac, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
+  esp_now_add_peer(&peerInfo);
+}
+
+void ensurePeerEncrypted(const uint8_t* mac, const uint8_t* pmk) {
+  esp_now_del_peer(mac);
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, mac, 6);
+  peerInfo.channel = 0;
+  if (pmk != nullptr && !isZeroPmk(pmk)) {
+    peerInfo.encrypt = true;
+    memcpy(peerInfo.lmk, pmk, 16);
+  } else {
+    peerInfo.encrypt = false;
+  }
   esp_now_add_peer(&peerInfo);
 }
 
@@ -1084,6 +1252,24 @@ void onDataRecv(const esp_now_recv_info_t*, const uint8_t* data, int len) {
           pushConfigResponse(String("SYNC_ERR=REMOTE_INCOMPLETE:") + String(filterModeName(packet->filter_mode)) + "," + String(packet->allow_count) + "," + String(packet->high_count));
         } else {
           pushConfigResponse("SYNC_ERR=REMOTE_INVALID");
+        }
+        return;
+      }
+
+      // PMK_PONG: B からの応答 (STAGE_ACK または PING応答)
+      if (type == CONFIG_TYPE_PMK_PONG && len >= static_cast<int>(sizeof(PmkPacket))) {
+        const auto* packet = reinterpret_cast<const PmkPacket*>(data);
+        if (packet->version != BRIDGE_VERSION || packet->source == NODE_ID) {
+          return;
+        }
+        if (pmkState == PMK_STATE_AWAITING_ACK) {
+          pmkState = PMK_STATE_READY;
+          pushConfigResponse("PMK_STAGE_OK");
+        } else if (pmkState == PMK_STATE_VERIFY) {
+          // 新PMKで通信確認 → 確定保存
+          pmkState = PMK_STATE_IDLE;
+          savePmkToPrefs(activePmk);
+          pushConfigResponse(String("PMK_ACTIVE=") + (isZeroPmk(activePmk) ? "NONE" : pmkToHex(activePmk)));
         }
         return;
       }
@@ -1484,17 +1670,34 @@ void taskCanHealth(void*) {
   }
 }
 
+void reinitEspNow(const uint8_t* pmk) {
+  esp_now_deinit();
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_now_init();
+  if (pmk != nullptr && !isZeroPmk(pmk)) {
+    esp_now_set_pmk(pmk);
+  }
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataRecv);
+  if (hasPeer) {
+    ensurePeerEncrypted(peerMac, pmk);
+  }
+}
+
 void initEspNow() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_promiscuous(false);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   esp_now_init();
+  if (!isZeroPmk(activePmk)) {
+    esp_now_set_pmk(activePmk);
+  }
   esp_now_register_send_cb(onDataSent);
   esp_now_register_recv_cb(onDataRecv);
   loadPeerMac();
   if (hasPeer) {
-    ensurePeer(peerMac);
+    ensurePeerEncrypted(peerMac, activePmk);
   }
 }
 
@@ -1512,7 +1715,7 @@ void initBleConfig() {
   bleServer->setCallbacks(new ConfigServerCallbacks());
 
   BLEService* service = bleServer->createService(BLE_SERVICE_UUID);
-  bleTxCharacteristic = service->createCharacteristic(BLE_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
+  bleTxCharacteristic = service->createCharacteristic(BLE_TX_UUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
 
   bleRxCharacteristic = service->createCharacteristic(BLE_RX_UUID, NIMBLE_PROPERTY::WRITE);
   bleRxCharacteristic->setCallbacks(new ConfigRxCallbacks());
@@ -1650,6 +1853,83 @@ void processBleCommands() {
     return;
   }
 
+  // --- PMK コマンド ---
+  if (command.startsWith("SET_PMK_PENDING=")) {
+    if (pmkState != PMK_STATE_IDLE) {
+      pushConfigResponse("ERR=PMK_BUSY");
+      return;
+    }
+    if (!hasPeer) {
+      pushConfigResponse("ERR=PMK_NO_PEER");
+      return;
+    }
+    uint8_t newPmk[16] = {};
+    const String hexStr = command.substring(16);
+    if (!parsePmkHex(hexStr, newPmk)) {
+      pushConfigResponse("ERR=PMK_PARSE");
+      return;
+    }
+    memcpy(pendingPmk, newPmk, 16);
+    pmkState = PMK_STATE_AWAITING_ACK;
+    sendPmkPacket(CONFIG_TYPE_PMK_STAGE, pendingPmk, 0);
+    pushConfigResponse(String("PMK_STAGING=") + pmkToHex(pendingPmk));
+    return;
+  }
+
+  if (command.equalsIgnoreCase("APPLY_PMK")) {
+    if (pmkState != PMK_STATE_READY) {
+      pushConfigResponse("ERR=PMK_NOT_STAGED");
+      return;
+    }
+    // 現在のPMKをバックアップ
+    memcpy(activePmkBackup, activePmk, 16);
+    // B に apply パケット送信 (まだ旧接続で)
+    sendPmkPacket(CONFIG_TYPE_PMK_APPLY, pendingPmk, PMK_APPLY_DELAY_MS);
+    pmkApplyAtMs = millis() + PMK_APPLY_DELAY_MS;
+    pmkState = PMK_STATE_SWITCHING;
+    pushConfigResponse(String("PMK_APPLY_SENT=") + String(PMK_APPLY_DELAY_MS));
+    return;
+  }
+
+  if (command.equalsIgnoreCase("CANCEL_PMK")) {
+    if (pmkState == PMK_STATE_SWITCHING || pmkState == PMK_STATE_VERIFY) {
+      pushConfigResponse("ERR=PMK_CANNOT_CANCEL");
+      return;
+    }
+    memset(pendingPmk, 0, 16);
+    pmkState = PMK_STATE_IDLE;
+    pushConfigResponse("PMK_CANCELLED");
+    return;
+  }
+
+  if (command.equalsIgnoreCase("CLEAR_PMK")) {
+    if (pmkState != PMK_STATE_IDLE) {
+      pushConfigResponse("ERR=PMK_BUSY");
+      return;
+    }
+    if (!hasPeer) {
+      // ピアなし: ローカルのみクリア
+      memset(activePmk, 0, 16);
+      savePmkToPrefs(activePmk);
+      reinitEspNow(activePmk);
+      pushConfigResponse("PMK_CLEARED=LOCAL");
+      return;
+    }
+    memset(pendingPmk, 0, 16);
+    pmkState = PMK_STATE_AWAITING_ACK;
+    sendPmkPacket(CONFIG_TYPE_PMK_STAGE, pendingPmk, 0);
+    pushConfigResponse("PMK_STAGING=NONE");
+    return;
+  }
+
+  if (command.equalsIgnoreCase("GET_PMK_STATE")) {
+    const char* stateNames[] = {"IDLE","AWAITING_ACK","READY","SWITCHING","VERIFY"};
+    const uint8_t si = static_cast<uint8_t>(pmkState);
+    pushConfigResponse(String("PMK_STATE=") + stateNames[si < 5 ? si : 0] +
+                       ",active=" + (isZeroPmk(activePmk) ? "NONE" : pmkToHex(activePmk)));
+    return;
+  }
+
   pushConfigResponse(String("ERR=UNKNOWN:") + command);
 }
 
@@ -1664,6 +1944,7 @@ void setup() {
   setLedColor(0, 0, 0);
 
   loadRuntimeConfigFromPrefs();
+  loadPmkFromPrefs();
 
   const uint32_t detectStart = millis();
   while (millis() - detectStart < CONFIG_MODE_HOLD_MS) {
@@ -1729,6 +2010,7 @@ void loop() {
   processSerialCommands();
   processBleCommands();
   processBleNotifications();
+  processPmkStateMachine();
   refreshLed();
 
   if (now - lastStatsMs >= STATS_INTERVAL_MS) {

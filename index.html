@@ -217,6 +217,36 @@
       <textarea id="headerPreview" spellcheck="false"></textarea>
     </details>
 
+    <details class="output" id="pmkPanel">
+      <summary>ESP-NOW パスワード設定</summary>
+      <div style="padding:10px 0 4px;">
+        <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+          <label style="display:flex; flex-direction:column; gap:4px; flex:1; min-width:220px;">
+            <span style="font-size:13px; color:var(--muted);">パスワード (任意文字列)</span>
+            <input id="pmkPasswordInput" type="password" placeholder="任意のパスワードを入力" autocomplete="off">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:4px; flex:2; min-width:280px;">
+            <span style="font-size:13px; color:var(--muted);">変換後キー (32 hex / SHA-256 先頭16バイト)</span>
+            <input id="pmkDerivedKeyDisplay" type="text" readonly placeholder="パスワード入力後に自動表示" style="font-family:monospace; letter-spacing:0.05em;">
+          </label>
+        </div>
+        <div class="output-buttons">
+          <button id="pmkSetButton" disabled>1. ステージング送信</button>
+          <button id="pmkApplyButton" disabled>2. 切替実行</button>
+          <button id="pmkCancelButton" disabled>キャンセル</button>
+          <button id="pmkGetStateButton" disabled>状態確認</button>
+          <button id="pmkClearButton" disabled>パスワード削除</button>
+        </div>
+        <div id="pmkStatusDisplay" style="margin-top:8px; padding:8px 12px; background:rgba(255,253,250,0.8); border:1px solid var(--line); border-radius:10px; font-size:13px; min-height:36px;">
+          状態: IDLE (USB接続後に使用可)
+        </div>
+        <p style="margin:8px 0 0; font-size:12px; color:var(--muted);">
+          ※ AとBの両ノードに同じパスワードを設定することで通信が暗号化されます。<br>
+          ※ フォールバック: 同期失敗時はBにUSB接続し、同じパスワードで「SET_PMK_PENDING=&lt;32hex&gt;」→「APPLY_PMK_LOCAL」を実行。
+        </p>
+      </div>
+    </details>
+
     <footer class="status" id="statusBar">READY v20260329f</footer>
 
     <input id="jsonFileInput" type="file" accept=".json,application/json" hidden>

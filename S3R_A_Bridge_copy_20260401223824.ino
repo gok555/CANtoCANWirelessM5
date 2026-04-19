@@ -913,15 +913,14 @@ bool syncRuntimeConfigToPeer() {
 class ConfigServerCallbacks : public BLEServerCallbacks {
  public:
   void onConnect(BLEServer* server, NimBLEConnInfo& connInfo) override {
-    (void)server;
-    (void)connInfo;
     bleClientConnected = true;
     Serial.println("[BLE] client connected");
-    // updateConnParams は GATT discovery 完了前に呼ぶと切断される為削除
+    if (server != nullptr) {
+      server->updateConnParams(connInfo.getConnHandle(), 24, 48, 0, 180);
+    }
   }
 
   void onDisconnect(BLEServer* server, NimBLEConnInfo&, int) override {
-    (void)server;
     bleClientConnected = false;
     Serial.println("[BLE] client disconnected");
     NimBLEDevice::startAdvertising();
@@ -1715,7 +1714,7 @@ void initBleConfig() {
   bleServer->setCallbacks(new ConfigServerCallbacks());
 
   BLEService* service = bleServer->createService(BLE_SERVICE_UUID);
-  bleTxCharacteristic = service->createCharacteristic(BLE_TX_UUID, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
+  bleTxCharacteristic = service->createCharacteristic(BLE_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
 
   bleRxCharacteristic = service->createCharacteristic(BLE_RX_UUID, NIMBLE_PROPERTY::WRITE);
   bleRxCharacteristic->setCallbacks(new ConfigRxCallbacks());
